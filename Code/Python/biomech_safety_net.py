@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import utilities_TO as utils_TO
 import utilities_casadi as utils_ca
 from scipy.spatial.transform import Rotation as R
+from scipy.optimize import minimize_scalar
 import pickle
 from std_msgs.msg import Float64MultiArray, Bool
 import threading
@@ -33,6 +34,9 @@ class BS_net:
         self.pe_boundaries = [-20, 160] # defines the interval of physiologically plausible values for the plane of elevation [deg]
         self.se_boundaries = [0, 144]   # as above, for the shoulder elevation [deg]
         self.ar_boundaries = [-90, 100] # as above, for the axial rotation [deg]
+
+        self.pe_normalizer = 160        # normalization of the variables used to compute the interpolated strain maps
+        self.se_normalizer = 144        # normalization of the variables used to compute the interpolated strain maps
 
         self.strainmap_step = 4         # discretization step used along the model's coordinate [in degrees]
                                         # By default we set it to 4, as the strainmaps are generated from the biomechanical model
@@ -64,7 +68,7 @@ class BS_net:
         self.num_params_ellipses = 4    # each unsafe zone will be defined by a 2D ellipse. Its parameters are x0, y0, a^2 and b^2
                                         # the expression for the ellipse is (x-x0)^2/a^2+(y-y0)^2/b^2=1
 
-        self.max_safe_strain = 2.7      # value of strain [%] that is considered unsafe
+        self.max_safe_strain = 0.7      # value of strain [%] that is considered unsafe
 
         # definition of the state variables
         self.state_space_names = None               # The names of the coordinates in the model that describe the state-space in which we move
@@ -74,6 +78,10 @@ class BS_net:
         self.speed_estimate = speed_estimate        # Are estimated velocities of the model computed?
                                                     # False: quasi_static assumption, True: updated through measurements
         
+        # define the references
+        self.x_opt = None
+        self.u_opt = None
+
         # parameters regarding the muscle activation
         self.varying_activation = False             # initialize the module assuming that the activation will not change
         self.activation_level = 0                   # level of activation of the muscles whose strain we are considering
@@ -139,7 +147,7 @@ class BS_net:
         functions used to approximate the original discrete strainmap.
 
         Out of these parameters, we can already obtain the analytical expression of the high-strain zones, that is
-        computed and saved below. 
+        computed and saved below. (TODO: wrong!)
         
         It is useful for debugging, then the update of the strainmaps should be done based on the 
         state_values_current returned by sensor input (like the robotic encoder, or visual input).
@@ -148,25 +156,29 @@ class BS_net:
 
         num_gaussians = len(self.all_params_gaussians)//self.num_params_gaussian    # find the number of gaussians employed
 
-        all_params_ellipses = np.zeros(num_gaussians*self.num_params_ellipse)       # corresponding number of parameters for the
+        all_params_ellipses = np.zeros(num_gaussians*self.num_params_ellipses)       # corresponding number of parameters for the
                                                                                     # ellipses defining the unsafe zones
 
+        # now loop through every 2D Gaussian and extract the parameters of the ellipse corresponding to the
+        # contour of the region where the Gaussian is higher than max_safe_strain
+        # TODO: this is wrong, since Gaussians are summed together, so their level set is not
+        # an ellipse anymore...
         for i in range(num_gaussians):
-            amplitude = self.all_params_gaussians[i*self.num_params_ellipse + 0]
-            x0 = self.all_params_gaussians[i*self.num_params_ellipse + 1]
-            y0 = self.all_params_gaussians[i*self.num_params_ellipse + 2]
-            sigma_x = self.all_params_gaussians[i*self.num_params_ellipse + 3]
-            sigma_y = self.all_params_gaussians[i*self.num_params_ellipse + 4]
-            offset = self.all_params_gaussians[i*self.num_params_ellipse + 5]
+            amplitude = self.all_params_gaussians[i*self.num_params_ellipses + 0]
+            x0 = self.all_params_gaussians[i*self.num_params_ellipses + 1]
+            y0 = self.all_params_gaussians[i*self.num_params_ellipses + 2]
+            sigma_x = self.all_params_gaussians[i*self.num_params_ellipses + 3]
+            sigma_y = self.all_params_gaussians[i*self.num_params_ellipses + 4]
+            offset = self.all_params_gaussians[i*self.num_params_ellipses + 5]
 
-            a_squared = - 2 * sigma_x^2 / np.log10((self.max_safe_strain-offset)/amplitude)
+            a_squared = - 2 * sigma_x**2 / np.log10((self.max_safe_strain-offset)/amplitude)
             if a_squared <= 0:
                 a_squared = np.nan
-            b_squared = - 2 * sigma_y^2 / np.log10((self.max_safe_strain-offset)/amplitude)
+            b_squared = - 2 * sigma_y**2 / np.log10((self.max_safe_strain-offset)/amplitude)
             if b_squared <= 0:
                 b_squared = np.nan
 
-            all_params_ellipses[i*self.num_params_ellipse:i*self.num_params_ellipse+self.num_params_ellipses] = np.array([x0, y0, a_squared, b_squared])
+            all_params_ellipses[i*self.num_params_ellipses:i*self.num_params_ellipses+self.num_params_ellipses] = np.array([x0, y0, a_squared, b_squared])
 
         self.all_params_ellipses = all_params_ellipses
 
@@ -369,6 +381,45 @@ class BS_net:
         print("Receiving current shoulder pose.")
 
 
+    def publish_continuous_trajectory(self, p_gh_in_base, rot_ee_in_base_0, dist_shoulder_ee):
+        """
+        This function picks the most recent information regarding the optimal shoulder trajectory,
+        converts it to end effector space and publishes the robot reference continuously. A flag enables/disables
+        the computations/publishing to be performed, such that this happens only if the robot controller needs it.
+        """
+        rate = self.ros_rate
+
+        while not rospy.is_shutdown():
+            if self.flag_pub_trajectory:    # perform the computations only if needed
+                with self.x_opt_lock:       # get the lock to read and modify references
+                    if self.x_opt is not None:
+                        # We will pick always the first element of the trajectory, and then delete it (unless it is the last element)
+                        # This is done in blocking mode to avoid conflicts, then we move on to processing the shoulder pose and convert
+                        # it to cartesian trajectory
+                        if np.shape(self.x_opt)[1]>1:
+                            # If there are many elements left, get the first and then delete it
+                            cmd_shoulder_pose = self.x_opt[0::2, 0]
+                            self.x_opt = np.delete(self.x_opt, obj=0, axis=1)   # delete the first column
+
+                            if self.u_opt is not None:
+                                cmd_torques = self.u_opt[:,0]
+                                self.u_opt = np.delete(self.u_opt, obj=0, axis=1)
+                            else:
+                                cmd_torques = None
+
+                        else:
+                            # If there is only one element left, keep picking it
+                            cmd_shoulder_pose = self.x_opt[0::2, 0]
+                            if self.u_opt is not None:
+                                cmd_torques = self.u_opt[:,0]
+                            else:
+                                cmd_torques = None
+
+                        self.publishCartRef(cmd_shoulder_pose, cmd_torques, p_gh_in_base, rot_ee_in_base_0, dist_shoulder_ee)
+
+            rate.sleep()
+
+
     def setReferenceToCurrentPose(self):
         """
         This function allows to overwrite the reference state/control values. They are
@@ -401,7 +452,31 @@ class BS_net:
             return False
         
 
-    def monitor_unsafe_zones(self):
+    def ellipse_y_1quad(self, x, a_squared, b_squared):
+        """
+        Function returning the y value of the ellipse given the x, in the first quadrant:
+        y = b * sqrt(1-x^2/a^2)
+        
+        The ellipse is assumed to be centered in 0, and its full expression is 
+        x^2/a^2+ y^2/b^2 = 1
+        """
+        return np.sqrt(b_squared * (1-x**2/a_squared))
+
+
+    def distance_function_x_1quad(self, x, px, py, a_squared, b_squared):
+        """
+        Function expressing the distance between a point (px, py) in the first quadrant (px, py>0)
+        and the ellipse defined by x^2/a^2+ y^2/b^2 = 1
+
+        The distance is a function of the variable x, obtained by the following two equations:
+        1. distance in the plane: d(x,y) = (x-px)^2 + (y-py)^2
+        2. ellipse in the first quadrant: y = b * sqrt(1-x^2/a^2)
+        """
+
+        return (x-px)**2 + (np.sqrt(b_squared* (1 - x**2/a_squared)) - py)**2
+        
+
+    def monitor_unsafe_zones(self, position_gh_in_base, base_R_sh, dist_gh_elbow):
         """
         This function monitors whether we are in any unsafe zones, based on the ellipse parameters
         obtained by the analytical expression of the strainmaps. In particular:
@@ -410,23 +485,124 @@ class BS_net:
             - if we are inside one (or more) ellipses, the reference point is the closest point
               on the ellipses borders.
         The corresponding human pose is commanded to the robot, transforming it into EE pose.
-        """
-        num_ellipses = len(self.all_params_ellipses)/self.num_params_ellipses   # retrieve number of ellipses currently present in the map
 
+        Inputs are:
+            - position_gh_in_base: the coordinates (px_gh, py_gh, pz_gh) of the glenohumeral joint center in the
+                                   robot's base frame, as a numpy array
+            - base_R_sh: rotation matrix defining the orientation of the shoulder frame wrt the world frame
+                         (as a scipy.spatial.transform.Rotation object)
+            - dist_gh_elbow: the vector expressing the distance of the elbow tip from the GH center, expressed in the 
+                             shoulder frame when plane of elevation = shoulder elevation =  axial rotation= 0
+
+        The positions and distances must be expressed in meters, and the rotations in radians.
+        However, the strain map is defined in degrees, so the correct conversions are applied.
+        Note also that the expressions used not for the ellipses assume that the variables have been normalized
+        (wrt self.pe_normalizer and self.se_normalizer).
+        """
+        num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)   # retrieve number of ellipses currently present in the map
+
+        # retrieve the current point on the strain map
+        # remember that the strain map is defined in degrees!
+        pe = np.rad2deg(self.state_values_current[0])
+        se = np.rad2deg(self.state_values_current[2])
+        ar = np.rad2deg(self.state_values_current[4])
+
+        # check if (pe, se) is inside any unsafe zone
         in_zone_i = np.zeros(num_ellipses)
-        for i in range(num_ellipses):       # loop through all the ellipses, to check if the current model's state is inside any of them
+        for i in range(num_ellipses):
             a_squared = self.all_params_ellipses[self.num_params_ellipses*i+2]
             b_squared = self.all_params_ellipses[self.num_params_ellipses*i+3]
             if a_squared is not None and b_squared is not None:     # if the ellipse really exists
                 x0 = self.all_params_ellipses[self.num_params_ellipses*i]
                 y0 = self.all_params_ellipses[self.num_params_ellipses*i+1]
 
-                pe = self.state_values_current[0]
-                se = self.state_values_current[2]
+                # note that we use normalized variables here
+                in_zone_i[i] = int(((pe/self.pe_normalizer-x0)**2/a_squared + (se/self.se_normalizer-y0)**2/b_squared) < 1)
 
-                in_zone_i[i] = ((pe-x0)^2/a_squared + (se-y0)^2/b_squared) < 1
+        # now we know if we are inside one (or more ellipses). Given the current shoulder pose (pe, se), we find 
+        # the closest point on the surface of the ellipses containing (pe, se).
+        num_in_zone = int(in_zone_i.sum())
+        if num_in_zone == 0:
+            # if we are not inside any ellipse, then we are safe and the current position is kept
+            # (we convert back to radians for compatibility with the rest of the code)
+            self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
-            TODO: implement strategy to find closest point and send that to the robot
+        else:
+            # otherwise check all of the zones in which we are in, and find the closest points
+            closest_point = np.nan * np.ones((num_ellipses, 2))
+
+            # initialize parameters for the ellipses for visualization
+            params_ellipse_viz = np.zeros((num_in_zone, self.num_params_ellipses))
+
+            # loop through the ellipses
+            for i in range(num_ellipses):
+                if in_zone_i[i] == 1:           # are we in this ellipse?
+
+                    # retrieve ellipse parameters
+                    x0 = self.all_params_ellipses[self.num_params_ellipses*i]
+                    y0 = self.all_params_ellipses[self.num_params_ellipses*i+1]
+                    a_squared = self.all_params_ellipses[self.num_params_ellipses*i+2]
+                    b_squared = self.all_params_ellipses[self.num_params_ellipses*i+3]
+
+                    # express (se, pe) in the reference frame of the center of the ellipse
+                    # we use normalized variables since the ellipse is calculated in that space
+                    pe_ellipse = pe/self.pe_normalizer - x0
+                    se_ellipse = se/self.se_normalizer - y0
+
+                    # record in which quadrant we are, and transform (pe_ellipse, se_ellipse) to
+                    # the first quadrant of the ellipse
+                    pe_ellipse_sgn = np.sign(pe_ellipse)
+                    se_ellipse_sgn = np.sign(se_ellipse)
+
+                    pe_1quad = np.abs(pe_ellipse)
+                    se_1quad = np.abs(se_ellipse)
+
+                    # find the closest point in the first quadrant
+                    opt = minimize_scalar(self.distance_function_x_1quad, args=(pe_1quad, se_1quad, a_squared, b_squared), bounds = (0, np.sqrt(a_squared)))
+                    if opt.success == False:
+                        RuntimeError('Optimization did not converge: closest point on the ellipse could not be found!')
+
+                    x_cp_1quad = opt.x
+                    y_cp_1quad = self.ellipse_y_1quad(x_cp_1quad, a_squared, b_squared)
+
+                    # re-map point in the correct quadrant 
+                    TODO: check what is happening here
+                    pe_cp_ellipse = pe_ellipse_sgn * x_cp_1quad
+                    se_cp_ellipse = se_ellipse_sgn * y_cp_1quad
+
+                    # move point back to original coordinate and store them
+                    # here, we take care of the de-normalization too
+                    pe_cp = (pe_cp_ellipse + x0) * self.pe_normalizer
+                    se_cp = (se_cp_ellipse + y0) * self.se_normalizer
+
+                    closest_point[i,:] = np.array([pe_cp, se_cp])
+
+                    # update strain visualization information for plotting the ellipse
+                    # this needs to be x0, y0, 2a, 2b
+                    params_ellipse_viz[i,:] = np.array([x0, y0, 2*np.sqrt(a_squared), 2*np.sqrt(b_squared)])
+
+            # extract only the relevant rows from closest_point, retaining the point(s)
+            # on each ellipse that we can consider as a reference
+            closest_point = closest_point[~np.isnan(closest_point).all(axis=1)]
+
+            # check if we are inside multiple ellipses. If so, check which point is really the closest
+            num_points = closest_point.shape[1]>1
+            if num_points:
+                curr_closest_point = closest_point[0, :]
+                curr_d = (curr_closest_point[0]-pe)**2 + (curr_closest_point[1]-se)**2
+
+                for i in range(1, num_points):
+                    new_d = (closest_point[i,0]-pe)**2 + (closest_point[i,1]-se)**2
+                    if new_d < curr_d:
+                        curr_d = new_d
+                        curr_closest_point = closest_point[i, :]
+
+            # send the closest point on the ellipse border as a reference for the robot
+            # we need to reconvert back to radians for compatibility with the rest of the code
+            self.x_opt = np.deg2rad(np.array([curr_closest_point[0], 0, curr_closest_point[1], 0, ar, 0]).reshape((6,1)))
+
+            # update the ellipses for plotting
+            self.strain_visualizer.update_ellipse_params(params_ellipse_viz)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -466,7 +642,7 @@ if __name__ == '__main__':
                                             base_R_sh = experimental_params['base_R_shoulder'], 
                                             dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])
         
-        params_strainmap_test = np.array([0,0,0,0,0,0])
+        params_strainmap_test = np.array([8, 33/160, 67/144, 90/160, 70/144, 0])
         
         bsn_module.setCurrentStrainMapParams(params_strainmap_test)
 
@@ -492,7 +668,9 @@ if __name__ == '__main__':
         while not rospy.is_shutdown():
             if bsn_module.keepRunning():
                 if mode == 1:
-                    bsn_module.monitor_unsafe_zones()
+                    bsn_module.monitor_unsafe_zones(experimental_params['p_gh_in_base'], 
+                                                    experimental_params['base_R_shoulder'], 
+                                                    experimental_params['d_gh_ee_in_shoulder'])
             
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.

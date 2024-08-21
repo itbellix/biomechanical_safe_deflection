@@ -696,7 +696,7 @@ if __name__ == "__main__":
                         control_module.client.send_goal(control_module.reference_tracker)
                         control_module.client.wait_for_result()
                         print("Start to follow optimal reference")
-                        topic = shared_ros_topics['optimal_cartesian_ref_ee']
+                        topic = shared_ros_topics['cartesian_ref_ee']
                         control_module.trackReferenceOnTopic('/'+topic, True)
                     else:
                         print("Robot is not in the initial pose yet. Doing nothing.")
@@ -704,7 +704,7 @@ if __name__ == "__main__":
                 # 'p' : pause the therapy
                 if pressed_key.get() == "p":
                     print("Pause trajectory generation")
-                    topic = shared_ros_topics['optimal_cartesian_ref_ee']
+                    topic = shared_ros_topics['cartesian_ref_ee']
                     control_module.trackReferenceOnTopic('/'+topic, False)
 
                 # 't' : test something
