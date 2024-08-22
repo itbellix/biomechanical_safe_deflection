@@ -202,8 +202,8 @@ if experiment == 2:
     ns_elb_stiffness = np.array([10, 10, 10])
     ns_elb_damping = 2*np.sqrt(ns_elb_stiffness)
 
-    ee_stiffness = np.array([600, 600, 600, 20, 20, 1])
-    ee_damping = 2*np.sqrt(np.array([630, 630, 630, 25, 25, 3])) 
+    ee_stiffness = np.array([300, 300, 300, 5, 5, 1])
+    ee_damping = 2*np.sqrt(ee_stiffness) 
 
     # option to change these only in simulation
     ns_elb_stiffness_sim = ns_elb_stiffness

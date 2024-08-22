@@ -68,7 +68,7 @@ class BS_net:
         self.num_params_ellipses = 4    # each unsafe zone will be defined by a 2D ellipse. Its parameters are x0, y0, a^2 and b^2
                                         # the expression for the ellipse is (x-x0)^2/a^2+(y-y0)^2/b^2=1
 
-        self.max_safe_strain = 0.7      # value of strain [%] that is considered unsafe
+        self.max_safe_strain = 0.3      # value of strain [%] that is considered unsafe
 
         # definition of the state variables
         self.state_space_names = None               # The names of the coordinates in the model that describe the state-space in which we move
@@ -139,6 +139,10 @@ class BS_net:
 
 
 
+    def setCurrentEllipseParams(self, all_params_ellipse):
+        self.all_params_ellipses = all_params_ellipse
+
+
     def setCurrentStrainMapParams(self, all_params_gaussians):
         """"
         This function is used to manually update the parameters fo the strainmap that is being considered, 
@@ -171,10 +175,10 @@ class BS_net:
             sigma_y = self.all_params_gaussians[i*self.num_params_ellipses + 4]
             offset = self.all_params_gaussians[i*self.num_params_ellipses + 5]
 
-            a_squared = - 2 * sigma_x**2 / np.log10((self.max_safe_strain-offset)/amplitude)
+            a_squared = 2 * sigma_x**2 / np.log(amplitude/(self.max_safe_strain-offset))
             if a_squared <= 0:
                 a_squared = np.nan
-            b_squared = - 2 * sigma_y**2 / np.log10((self.max_safe_strain-offset)/amplitude)
+            b_squared = 2 * sigma_y**2 / np.log(amplitude/(self.max_safe_strain-offset))
             if b_squared <= 0:
                 b_squared = np.nan
 
@@ -452,6 +456,48 @@ class BS_net:
             return False
         
 
+    def visualizeCurrentStrainMap(self, threeD = False, block = False):
+        """
+        Call this function to display the strainmap currently considered by safety net.
+        Select whether you want to visualize it in 3D or not.
+        """
+        # inizialize empty strainmap
+        current_strainmap = np.zeros(self.X_norm.shape)
+
+        # loop through all of the Gaussians, and obtain the strainmap values
+        for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+
+            #first, retrieve explicitly the parameters of the function considered in this iteration
+            amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
+            x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
+            y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
+            sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
+            sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
+            offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
+            
+            # then, compute the contribution of this particular Gaussian to the final strainmap
+            current_strainmap += amplitude * np.exp(-((self.X_norm-x0)**2/(2*sigma_x**2)+(self.Y_norm-y0)**2/(2*sigma_y**2)))+offset
+            
+        # finally, plot the resulting current strainmap
+        if threeD:
+            fig = plt.figure()
+            ax = fig.add_subplot(projection='3d')
+            ax.plot_surface(self.X, self.Y, current_strainmap, cmap='plasma')
+            ax.set_xlabel('Plane Elev [deg]')
+            ax.set_ylabel('Shoulder Elev [deg]')
+            ax.set_zlabel('Strain level [%]')
+            ax.set_zlim([0, current_strainmap.max()])
+        else:
+            fig = plt.figure()
+            ax = fig.add_subplot()
+            heatmap = ax.imshow(np.flip(current_strainmap.T, axis = 0), cmap='plasma', extent=[self.X.min(), self.X.max(), self.Y.min(), self.Y.max()])
+            fig.colorbar(heatmap, ax = ax, ticks=np.arange(0, current_strainmap.max() + 1), label='Strain level [%]')
+            ax.set_xlabel('Plane Elev [deg]')
+            ax.set_ylabel('Shoulder Elev [deg]')
+
+        plt.show(block=block)
+        
+
     def ellipse_y_1quad(self, x, a_squared, b_squared):
         """
         Function returning the y value of the ellipse given the x, in the first quadrant:
@@ -517,7 +563,14 @@ class BS_net:
                 y0 = self.all_params_ellipses[self.num_params_ellipses*i+1]
 
                 # note that we use normalized variables here
-                in_zone_i[i] = int(((pe/self.pe_normalizer-x0)**2/a_squared + (se/self.se_normalizer-y0)**2/b_squared) < 1)
+                in_zone_i[i] = int(((pe-x0)**2/a_squared + (se-y0)**2/b_squared) < 1)
+
+                # update strain visualization information for plotting the ellipse
+                # this needs to be x0, y0, 2a, 2b
+                params_ellipse_viz = np.array([x0, y0, 2*np.sqrt(a_squared), 2*np.sqrt(b_squared)]).reshape((1, self.num_params_ellipses))
+
+                # update the ellipses for plotting
+                self.strain_visualizer.update_ellipse_params(params_ellipse_viz, force = True)
 
         # now we know if we are inside one (or more ellipses). Given the current shoulder pose (pe, se), we find 
         # the closest point on the surface of the ellipses containing (pe, se).
@@ -531,9 +584,6 @@ class BS_net:
             # otherwise check all of the zones in which we are in, and find the closest points
             closest_point = np.nan * np.ones((num_ellipses, 2))
 
-            # initialize parameters for the ellipses for visualization
-            params_ellipse_viz = np.zeros((num_in_zone, self.num_params_ellipses))
-
             # loop through the ellipses
             for i in range(num_ellipses):
                 if in_zone_i[i] == 1:           # are we in this ellipse?
@@ -546,8 +596,8 @@ class BS_net:
 
                     # express (se, pe) in the reference frame of the center of the ellipse
                     # we use normalized variables since the ellipse is calculated in that space
-                    pe_ellipse = pe/self.pe_normalizer - x0
-                    se_ellipse = se/self.se_normalizer - y0
+                    pe_ellipse = pe - x0
+                    se_ellipse = se - y0
 
                     # record in which quadrant we are, and transform (pe_ellipse, se_ellipse) to
                     # the first quadrant of the ellipse
@@ -566,20 +616,16 @@ class BS_net:
                     y_cp_1quad = self.ellipse_y_1quad(x_cp_1quad, a_squared, b_squared)
 
                     # re-map point in the correct quadrant 
-                    TODO: check what is happening here
+                    # TODO: check what is happening here
                     pe_cp_ellipse = pe_ellipse_sgn * x_cp_1quad
                     se_cp_ellipse = se_ellipse_sgn * y_cp_1quad
 
                     # move point back to original coordinate and store them
                     # here, we take care of the de-normalization too
-                    pe_cp = (pe_cp_ellipse + x0) * self.pe_normalizer
-                    se_cp = (se_cp_ellipse + y0) * self.se_normalizer
+                    pe_cp = pe_cp_ellipse + x0
+                    se_cp = se_cp_ellipse + y0
 
                     closest_point[i,:] = np.array([pe_cp, se_cp])
-
-                    # update strain visualization information for plotting the ellipse
-                    # this needs to be x0, y0, 2a, 2b
-                    params_ellipse_viz[i,:] = np.array([x0, y0, 2*np.sqrt(a_squared), 2*np.sqrt(b_squared)])
 
             # extract only the relevant rows from closest_point, retaining the point(s)
             # on each ellipse that we can consider as a reference
@@ -600,9 +646,6 @@ class BS_net:
             # send the closest point on the ellipse border as a reference for the robot
             # we need to reconvert back to radians for compatibility with the rest of the code
             self.x_opt = np.deg2rad(np.array([curr_closest_point[0], 0, curr_closest_point[1], 0, ar, 0]).reshape((6,1)))
-
-            # update the ellipses for plotting
-            self.strain_visualizer.update_ellipse_params(params_ellipse_viz)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -642,9 +685,12 @@ if __name__ == '__main__':
                                             base_R_sh = experimental_params['base_R_shoulder'], 
                                             dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])
         
-        params_strainmap_test = np.array([8, 33/160, 67/144, 90/160, 70/144, 0])
+        params_strainmap_test = np.array([0, 1, 1, 1, 1, 0])        # bsn_module.setCurrentStrainMapParams(params_strainmap_test)
+
+        params_ellipse_test = np.array([20, 90, 35**2, 25**2])
         
-        bsn_module.setCurrentStrainMapParams(params_strainmap_test)
+        bsn_module.setCurrentEllipseParams(params_ellipse_test)
+        # bsn_module.setCurrentStrainMapParams(params_strainmap_test)
 
         # Wait until the robot has reached the required position, and proceed only when the current shoulder pose is published
         bsn_module.waitForShoulderState()

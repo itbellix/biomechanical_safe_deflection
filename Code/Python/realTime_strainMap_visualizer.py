@@ -16,10 +16,12 @@ class RealTimeStrainMapVisualizer:
         self.Y_norm = Y_norm
         self.num_params_gaussian = num_params_gaussian
         self.ar_current = None          # current (rounded) value of the axial rotation, associated to the strainmap
+        self.ar_prev = None             # previous (rounded) value of the axial rotation, associated to the strainmap
         self.pe_boundaries = pe_boundaries
         self.se_boundaries = se_boundaries
 
         self.act_current = None         # current (rounded) value of the activation
+        self.act_prev = None            # previous (rounded) value of the activation
 
         # create a surface to hold the image of the strainmap
         self.image_surface = pygame.Surface(np.shape(X_norm))
@@ -27,6 +29,10 @@ class RealTimeStrainMapVisualizer:
         # define the bound values for the strain
         self.min_strain = 0
         self.max_strain = 8
+
+        self.ellipse_params = None  # the parameters of the ellipses representing unsafe zones
+                                    # (stored as: x0, y0, diameter_x, diameter_y)
+
 
         # dimensions of the resulting windows in pixels
         self.widow_dimensions = (800, 600)
@@ -88,7 +94,7 @@ class RealTimeStrainMapVisualizer:
         """
         # first, we find the position of our point as a scale factor for both the coordinates
         # essentially, if the point is very close to the upper bound of its two coordinates, this value is ~1
-        # while if it is very close to the lower to the lower bound, it is ~0
+        # while if it is very close to the lower bound, it is ~0
         pe_scale_factor = (point[0]-self.pe_boundaries[0])/(self.pe_boundaries[1]-self.pe_boundaries[0])
         se_scale_factor = (point[1]-self.se_boundaries[0])/(self.se_boundaries[1]-self.se_boundaries[0])
 
@@ -142,7 +148,7 @@ class RealTimeStrainMapVisualizer:
             self.screen.blit(caption_text, np.array([10, self.remapPointOnScreen(np.array([0, ticks[i]]))[1]-4*(num_ticks -i)]))
 
 
-    def updateStrainMap(self, list_params, pose_current = None, trajectory_current = None, goal_current = None, vel_current = None):
+    def updateStrainMap(self, list_params, pose_current = None, trajectory_current = None, goal_current = None, vel_current = None, ar_current = None):
         """
         This function allows to update the strainmap.
         Inputs:
@@ -190,6 +196,7 @@ class RealTimeStrainMapVisualizer:
         self.screen.blit(pygame.transform.scale(self.image_surface, self.widow_dimensions), (0, 0))
 
         # Render and blit the caption
+        self.ar_current = ar_current
         ar_label = self.font_title_pygame.render(f'Axial rotation:{self.ar_current}', True, self.color_lines)
         self.screen.blit(ar_label, (self.widow_dimensions[0]-200, 10))
 
@@ -217,14 +224,37 @@ class RealTimeStrainMapVisualizer:
 
         # visualize also the goal on the current strainmap (if it has been set)
         if goal_current is not None:
-            goal_radius = 5
+            goal_radius = 3.5
             pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(goal_current)), goal_radius)
+
+        # visualize ellipses
+        if self.ellipse_params is not None:
+            for i in range(self.ellipse_params.shape[0]):
+                width = self.ellipse_params[i, 2] * self.widow_dimensions[0]/(self.pe_boundaries[1] - self.pe_boundaries[0])
+                heigth = self.ellipse_params[i, 3] * self.widow_dimensions[1]/(self.se_boundaries[1] - self.se_boundaries[0])
+                rect = pygame.Rect(0, 0, width, heigth)
+                rect.center = self.remapPointOnScreen(np.array([self.ellipse_params[i, 0], self.ellipse_params[i, 1]]))
+                pygame.draw.ellipse(self.screen, (96, 245, 66), rect, width = 2)
 
         # draw the X and Y axis on the map
         self.draw_x_axis(np.array([0, 40, 80, 120, 140]))
         self.draw_y_axis(np.array([20, 40, 80, 140]))
 
         pygame.display.flip()
+
+
+    def update_ellipse_params(self, ellipse_params, force = False):
+        """
+        function used to update the ellipse parameters representing the unsafe zones.
+        Only the one relevant for the current strain-maps are considered.
+
+        We can also force the update by setting force=True
+        """
+        if self.act_current != self.act_prev or self.ar_current != self.ar_prev:
+            self.ellipse_params = ellipse_params
+
+        if force:
+            self.ellipse_params = ellipse_params
 
 
     def quit(self):
