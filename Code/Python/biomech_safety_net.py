@@ -64,11 +64,13 @@ class BS_net:
 
         self.strainmap_current = None               # strainmap corresponding to the current model state
 
-        # Definition of the unsafe zones
+        # Definition of the unsafe zones (related to INTERACTION MODE 1)
+        self.in_zone_i = np.array([0])  # are we inside any unsafe zone? 0 = no, 1 = yes
         self.num_params_ellipses = 4    # each unsafe zone will be defined by a 2D ellipse. Its parameters are x0, y0, a^2 and b^2
                                         # the expression for the ellipse is (x-x0)^2/a^2+(y-y0)^2/b^2=1
 
-        self.max_safe_strain = 0.3      # value of strain [%] that is considered unsafe
+        # Definition of the "risky strain" (related to INTERACTION MODE 2)
+        self.risky_strain = 2.0      # value of strain [%] that is considered risky
 
         # definition of the state variables
         self.state_space_names = None               # The names of the coordinates in the model that describe the state-space in which we move
@@ -92,6 +94,19 @@ class BS_net:
 
         # Robot-related variables
         self.current_ee_pose = None
+
+        self.ee_cart_stiffness_cmd = None       # stiffness value sent to the Cartesian impedance controller
+        self.ee_cart_damping_cmd = None         # damping value sent to the Cartesian impedance controller
+
+        self.ee_cart_stiffness_default = np.array([400, 400, 400, 5, 5, 1]).reshape((6,1))
+        self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
+
+        self.ee_cart_stiffness_low = np.array([5, 5, 10, 5, 5, 1]).reshape((6,1))
+        self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
+
+        self.ee_cart_stiffness_dampVel = np.array([5, 5, 10, 5, 5, 1]).reshape((6,1))
+        self.ee_cart_damping_dampVel = np.array([50, 50, 50, 10, 10, 5]).reshape((6,1))
+
 
         # filter the reference that is generated, to avoid noise injection from the human-pose estimator
         self.last_cart_ee_cmd = np.zeros(3)         # store the last command sent to the robot (position)
@@ -137,6 +152,9 @@ class BS_net:
         self.flag_run = False
         self.sub_run= rospy.Subscriber(shared_ros_topics['request_reference'], Bool, self._flag_run_cb, queue_size=1)
 
+        # create a thread to catch the input from teh user, who will select the robot's interaction mode
+        self.interaction_mode = 0
+        self.input_thread = threading.Thread(target=self.input_thread_fnc, daemon=True)
 
 
     def setCurrentEllipseParams(self, all_params_ellipse):
@@ -158,33 +176,7 @@ class BS_net:
         """
         self.all_params_gaussians = all_params_gaussians        # store the parameters defining the strainmap
 
-        num_gaussians = len(self.all_params_gaussians)//self.num_params_gaussian    # find the number of gaussians employed
-
-        all_params_ellipses = np.zeros(num_gaussians*self.num_params_ellipses)       # corresponding number of parameters for the
-                                                                                    # ellipses defining the unsafe zones
-
-        # now loop through every 2D Gaussian and extract the parameters of the ellipse corresponding to the
-        # contour of the region where the Gaussian is higher than max_safe_strain
-        # TODO: this is wrong, since Gaussians are summed together, so their level set is not
-        # an ellipse anymore...
-        for i in range(num_gaussians):
-            amplitude = self.all_params_gaussians[i*self.num_params_ellipses + 0]
-            x0 = self.all_params_gaussians[i*self.num_params_ellipses + 1]
-            y0 = self.all_params_gaussians[i*self.num_params_ellipses + 2]
-            sigma_x = self.all_params_gaussians[i*self.num_params_ellipses + 3]
-            sigma_y = self.all_params_gaussians[i*self.num_params_ellipses + 4]
-            offset = self.all_params_gaussians[i*self.num_params_ellipses + 5]
-
-            a_squared = 2 * sigma_x**2 / np.log(amplitude/(self.max_safe_strain-offset))
-            if a_squared <= 0:
-                a_squared = np.nan
-            b_squared = 2 * sigma_y**2 / np.log(amplitude/(self.max_safe_strain-offset))
-            if b_squared <= 0:
-                b_squared = np.nan
-
-            all_params_ellipses[i*self.num_params_ellipses:i*self.num_params_ellipses+self.num_params_ellipses] = np.array([x0, y0, a_squared, b_squared])
-
-        self.all_params_ellipses = all_params_ellipses
+        self.num_gaussians = len(self.all_params_gaussians)//self.num_params_gaussian    # find the number of gaussians employed
 
 
     def publishCartRef(self, shoulder_pose_ref, torque_ref, position_gh_in_base, base_R_sh, dist_gh_elbow):
@@ -274,16 +266,29 @@ class BS_net:
         homogeneous_matrix = np.eye(4)
         homogeneous_matrix[0:3, 3] = np.transpose(ref_cart_point)       # store the 3D cartesian position
         homogeneous_matrix[0:3, 0:3] = base_R_ee.as_matrix()            # store the rotation information
+        ee_pose_d = np.reshape(homogeneous_matrix, (16,1))              # desired end effector pose
 
         # build the message
+        # if desired Cartesian stiffness and/or damping has been specified, we account for that too
         message_ref = Float64MultiArray()
         message_ref.layout.data_offset = 0
-        message_ref.data = np.reshape(homogeneous_matrix, (16,1))
+        if self.ee_cart_stiffness_cmd is None and self.ee_cart_damping_cmd is None:
+            # if no stiffness/damping have been specified, we just send the pose
+            # (controller on the robot's side will use default values)
+            message_ref.data = ee_pose_d
+        elif self.ee_cart_damping_cmd is None:
+            # if no damping has been specified, we send only what we have
+            message_ref.data = np.concatenate((ee_pose_d, self.ee_cart_stiffness_cmd))
+
+        else:
+            # if we have all of the parameters, then we just send everything
+            message_ref.data = np.concatenate((ee_pose_d, self.ee_cart_stiffness_cmd, self.ee_cart_damping_cmd))
+
 
         # publish the message
         self.pub_trajectory.publish(message_ref)
 
-        # publish also the alternative_z_ref
+        # publish also the alternative_z_ref (for logging it)
         message_z = Float64MultiArray()
         message_z.layout.data_offset = 0
         message_z.data = alternative_z_ref
@@ -424,14 +429,29 @@ class BS_net:
             rate.sleep()
 
 
+    def input_thread_fnc(self):
+        while True:
+            try:
+                # Read user input (this happens asynchronously as executed in a thread)
+                interaction_mode = input("Select interaction mode (0, 1, or 2):\n")
+                print(": interaction mode selected")
+                self.interaction_mode = int(interaction_mode)
+            except ValueError:
+                print("Invalid input, please enter a number between 0 and 2")
+
+
     def setReferenceToCurrentPose(self):
         """
         This function allows to overwrite the reference state/control values. They are
         substituted by the current state of the subject/patient sensed by the robot.
         """
         with self.x_opt_lock:
-            self.x_opt = self.state_values_current.reshape(self.nlps_module.dim_x, 1)
+            self.x_opt = self.state_values_current.reshape((6,1))
             self.u_opt = np.zeros((2,1))
+
+        # set the default stiffness and damping for the controller
+        self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+        self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
 
     def setReferenceToCurrentRefPose(self):
@@ -442,6 +462,10 @@ class BS_net:
         with self.x_opt_lock:
             self.x_opt = self.x_opt[:,0].reshape((6,1))
             self.u_opt = np.zeros((2,1))
+
+        # set the default stiffness and damping for the controller
+        self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+        self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
 
     def reachedPose(self, pose, tolerance = 0):
@@ -522,7 +546,7 @@ class BS_net:
         return (x-px)**2 + (np.sqrt(b_squared* (1 - x**2/a_squared)) - py)**2
         
 
-    def monitor_unsafe_zones(self, position_gh_in_base, base_R_sh, dist_gh_elbow):
+    def monitor_unsafe_zones(self):
         """
         This function monitors whether we are in any unsafe zones, based on the ellipse parameters
         obtained by the analytical expression of the strainmaps. In particular:
@@ -532,29 +556,19 @@ class BS_net:
               on the ellipses borders.
         The corresponding human pose is commanded to the robot, transforming it into EE pose.
 
-        Inputs are:
-            - position_gh_in_base: the coordinates (px_gh, py_gh, pz_gh) of the glenohumeral joint center in the
-                                   robot's base frame, as a numpy array
-            - base_R_sh: rotation matrix defining the orientation of the shoulder frame wrt the world frame
-                         (as a scipy.spatial.transform.Rotation object)
-            - dist_gh_elbow: the vector expressing the distance of the elbow tip from the GH center, expressed in the 
-                             shoulder frame when plane of elevation = shoulder elevation =  axial rotation= 0
 
-        The positions and distances must be expressed in meters, and the rotations in radians.
-        However, the strain map is defined in degrees, so the correct conversions are applied.
-        Note also that the expressions used not for the ellipses assume that the variables have been normalized
-        (wrt self.pe_normalizer and self.se_normalizer).
+        The ellipses are defined with model's angles in degrees!
         """
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)   # retrieve number of ellipses currently present in the map
 
         # retrieve the current point on the strain map
-        # remember that the strain map is defined in degrees!
+        # remember that the ellipses are defined in degrees!
         pe = np.rad2deg(self.state_values_current[0])
         se = np.rad2deg(self.state_values_current[2])
         ar = np.rad2deg(self.state_values_current[4])
 
         # check if (pe, se) is inside any unsafe zone
-        in_zone_i = np.zeros(num_ellipses)
+        self.in_zone_i = np.zeros(num_ellipses)
         for i in range(num_ellipses):
             a_squared = self.all_params_ellipses[self.num_params_ellipses*i+2]
             b_squared = self.all_params_ellipses[self.num_params_ellipses*i+3]
@@ -563,7 +577,7 @@ class BS_net:
                 y0 = self.all_params_ellipses[self.num_params_ellipses*i+1]
 
                 # note that we use normalized variables here
-                in_zone_i[i] = int(((pe-x0)**2/a_squared + (se-y0)**2/b_squared) < 1)
+                self.in_zone_i[i] = int(((pe-x0)**2/a_squared + (se-y0)**2/b_squared) < 1)
 
                 # update strain visualization information for plotting the ellipse
                 # this needs to be x0, y0, 2a, 2b
@@ -574,11 +588,16 @@ class BS_net:
 
         # now we know if we are inside one (or more ellipses). Given the current shoulder pose (pe, se), we find 
         # the closest point on the surface of the ellipses containing (pe, se).
-        num_in_zone = int(in_zone_i.sum())
+        num_in_zone = int(self.in_zone_i.sum())
         if num_in_zone == 0:
-            # if we are not inside any ellipse, then we are safe and the current position is kept
+            # if we are not inside any ellipse, then we are safe and the current position is tracked
             # (we convert back to radians for compatibility with the rest of the code)
             self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
+
+            # choose Cartesian stiffness and damping for the robot's impedance controller
+            # we set low values so that subject can move (almost) freely
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+            self.ee_cart_damping_cmd = self.ee_cart_damping_low
 
         else:
             # otherwise check all of the zones in which we are in, and find the closest points
@@ -586,7 +605,7 @@ class BS_net:
 
             # loop through the ellipses
             for i in range(num_ellipses):
-                if in_zone_i[i] == 1:           # are we in this ellipse?
+                if self.in_zone_i[i] == 1:           # are we in this ellipse?
 
                     # retrieve ellipse parameters
                     x0 = self.all_params_ellipses[self.num_params_ellipses*i]
@@ -610,6 +629,8 @@ class BS_net:
                     # find the closest point in the first quadrant
                     opt = minimize_scalar(self.distance_function_x_1quad, args=(pe_1quad, se_1quad, a_squared, b_squared), bounds = (0, np.sqrt(a_squared)))
                     if opt.success == False:
+                        # if optimization does not converge, throw an error and freeze to current pose
+                        self.setReferenceToCurrentPose
                         RuntimeError('Optimization did not converge: closest point on the ellipse could not be found!')
 
                     x_cp_1quad = opt.x
@@ -647,6 +668,63 @@ class BS_net:
             # we need to reconvert back to radians for compatibility with the rest of the code
             self.x_opt = np.deg2rad(np.array([curr_closest_point[0], 0, curr_closest_point[1], 0, ar, 0]).reshape((6,1)))
 
+            # choose Cartesian stiffness and damping for the robot's impedance controller
+            # we set high values so that alternative reference is tracked
+            # (the subject will be pulled out of the unsafe zone)
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+            self.ee_cart_damping_cmd = self.ee_cart_damping_default
+
+
+    def damp_unsafe_velocities(self):
+        """
+        This function takes care of increasing the damping of the cartesian impedance controller
+        when the subject is traversing high-strain areas.
+        Ideally, damping should be increased if the movement will result in increased strain, and
+        kept low when the movement is "escaping" unsafe areas.
+        """
+        # retrieve model's current pose and velocity
+        # remember that the strain map is defined in degrees
+        pe = np.rad2deg(self.state_values_current[0])
+        pe_dot = np.rad2deg(self.state_values_current[1])
+        se = np.rad2deg(self.state_values_current[2])
+        se_dot = np.rad2deg(self.state_values_current[3])
+        ar = np.rad2deg(self.state_values_current[4])
+        ar_dot = np.rad2deg(self.state_values_current[5])
+
+        current_strain = 0
+
+        # loop through all of the Gaussians, to obtain the contribution of each of them
+        # to the overall strain corresponding to the current position 
+        for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+
+            #first, retrieve explicitly the parameters of the function considered in this iteration
+            amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
+            x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
+            y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
+            sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
+            sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
+            offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
+            
+            # then, compute the contribution of this particular Gaussian to the final strainmap
+            # (remember that the strain maps are computed with normalized values!)
+            current_strain += amplitude * np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))+offset
+        
+        # check if the current strain is safe or risky
+        if current_strain <= self.risky_strain:
+            # if the strain is sufficiently low, then we are safe: we set the parameters
+            # for the cartesian impedance controller to produce minimal interaction force with the subject
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+
+        else:
+            # if we are in a risky area, then rapid movement should be limited.
+             self.ee_cart_stiffness_cmd  =self.ee_cart_stiffness_dampVel
+             self.ee_cart_damping_cmd  =self.ee_cart_damping_dampVel
+        
+        # the current position is set as a reference
+        # (we convert back to radians for compatibility with the rest of the code)
+        self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
+
 
 # ----------------------------------------------------------------------------------------------
 
@@ -670,10 +748,6 @@ if __name__ == '__main__':
         # are we debugging or not?
         debug_mode = False
 
-        # mode
-        mode = 1    # quite rough way of selecting the operating mode 
-                    # (do this better, so that it can be changed at runtime by the user)
-
         # initialize the biomechanics-safety net module
         bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=True)
 
@@ -684,13 +758,12 @@ if __name__ == '__main__':
                                             position_gh_in_base = experimental_params['p_gh_in_base'], 
                                             base_R_sh = experimental_params['base_R_shoulder'], 
                                             dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])
-        
-        params_strainmap_test = np.array([0, 1, 1, 1, 1, 0])        # bsn_module.setCurrentStrainMapParams(params_strainmap_test)
 
+        params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
         params_ellipse_test = np.array([20, 90, 35**2, 25**2])
         
         bsn_module.setCurrentEllipseParams(params_ellipse_test)
-        # bsn_module.setCurrentStrainMapParams(params_strainmap_test)
+        bsn_module.setCurrentStrainMapParams(params_strainmap_test)
 
         # Wait until the robot has reached the required position, and proceed only when the current shoulder pose is published
         bsn_module.waitForShoulderState()
@@ -709,15 +782,22 @@ if __name__ == '__main__':
         print("1")
         time.sleep(1)
 
+        # start the loop processing user input
+        bsn_module.input_thread.start()
+
         # start to provide the safe reference as long as the robot is requesting it
         # we do so in a way that allows temporarily pausing the therapy
         while not rospy.is_shutdown():
             if bsn_module.keepRunning():
-                if mode == 1:
-                    bsn_module.monitor_unsafe_zones(experimental_params['p_gh_in_base'], 
-                                                    experimental_params['base_R_shoulder'], 
-                                                    experimental_params['d_gh_ee_in_shoulder'])
-            
+
+                if bsn_module.interaction_mode == 0:        # mode = 0: keep current pose and wait
+                    bsn_module.setReferenceToCurrentPose()
+
+                elif bsn_module.interaction_mode == 1:        # mode = 1: monitor unsafe zones
+                    bsn_module.monitor_unsafe_zones()
+                    
+                elif bsn_module.interaction_mode == 2:        # 
+                    bsn_module.damp_unsafe_velocities()
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.
             if not bsn_module.keepRunning():

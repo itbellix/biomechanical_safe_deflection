@@ -270,7 +270,7 @@ class RobotControlModule:
         is published. It processes the data received and updates the internal parameters of the RobotControlModule accordingly.
         """
         # the message that we receive contains the required cartesian pose for the end effector in terms of an homogenous matrix.
-        homogeneous_matrix = np.array(data.data).reshape((4,4))
+        homogeneous_matrix = np.array(data.data[0:16]).reshape((4,4))
         self.ee_desired_pose = homogeneous_matrix
 
         # calculate corresponding 3D position and euler angles just in case
@@ -290,8 +290,10 @@ class RobotControlModule:
                                     stiffness and damping that it had before. If it is None, a default cartesian
                                     impedance controller will be used instead to keep the current position.
 
-        Note: the execution of this function might be a bit slow. This should not be a problem as it is meant to 
-        be used at the beginning of the experiment (otherwise, make sure that it does not cause delays).
+        Note: the execution of this function might be a bit slow, since two interactions with the action server
+        are necessary. 
+        This should not be a problem as it is meant to be used at the beginning of the experiment 
+        (otherwise, make sure that it does not cause delays).
         """
 
         # now we can actually send what we wanted without worrying 
@@ -341,7 +343,7 @@ class RobotControlModule:
 
         To guarantee that the robot joint configuration varies as smoothly as possible, we will use the
         ee_cartesian_jds mode: this means that the reference is a 6D Cartesian pose, but stiffness and damping
-        must be expressed in joint space (7x1)
+        must be expressed in joint space (7x1).
         """
         assert self.ee_desired_pose is not None, "Desired pose cannot be empty! Make sure of this before calling this function."
 
@@ -655,17 +657,16 @@ if __name__ == "__main__":
                         result = control_module.client.wait_for_result()
 
                         # add nullspace control on robot's last links
-                        if experiment == 1:
-                            control_module.reference_tracker.mode = 'ee_cartesian_ds'
-                            control_module.reference_tracker.reference = []
-                            control_module.reference_tracker.time = 1
-                            control_module.reference_tracker.rate = 20
-                            control_module.reference_tracker.stiffness = stiffness
-                            control_module.reference_tracker.damping = damping
-                            control_module.reference_tracker.nullspace_gain = np.array([0, 0, 0, 0, 1, 1, 0.5])
-                            control_module.reference_tracker.nullspace_reference = np.array([0, 0, 0, 0, 0, 0, 0])
-                            control_module.client.send_goal(control_module.reference_tracker)
-                            result = control_module.client.wait_for_result()
+                        control_module.reference_tracker.mode = 'ee_cartesian_ds'
+                        control_module.reference_tracker.reference = []
+                        control_module.reference_tracker.time = 1
+                        control_module.reference_tracker.rate = 20
+                        control_module.reference_tracker.stiffness = stiffness
+                        control_module.reference_tracker.damping = damping
+                        control_module.reference_tracker.nullspace_gain = np.array([0, 0, 0, 0, 0.01, 0.01, 0.01])
+                        control_module.reference_tracker.nullspace_reference = np.array([0, 0, 0, 0, 0, 0, 0])
+                        control_module.client.send_goal(control_module.reference_tracker)
+                        result = control_module.client.wait_for_result()
 
                         # set the flag for indicating completion, and inform the user
                         control_module.initial_pose_reached = True
@@ -693,6 +694,10 @@ if __name__ == "__main__":
                         control_module.reference_tracker.reference = []
                         control_module.reference_tracker.stiffness = stiffness_higher
                         control_module.reference_tracker.damping = damping_higher
+
+                        # wait a couple of seconds
+                        time.sleep(3)
+
                         control_module.client.send_goal(control_module.reference_tracker)
                         control_module.client.wait_for_result()
                         print("Start to follow optimal reference")
