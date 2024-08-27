@@ -101,11 +101,15 @@ class BS_net:
         self.ee_cart_stiffness_default = np.array([400, 400, 400, 5, 5, 1]).reshape((6,1))
         self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
 
-        self.ee_cart_stiffness_low = np.array([5, 5, 10, 5, 5, 1]).reshape((6,1))
+        self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
         self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
 
-        self.ee_cart_stiffness_dampVel = np.array([5, 5, 10, 5, 5, 1]).reshape((6,1))
-        self.ee_cart_damping_dampVel = np.array([50, 50, 50, 10, 10, 5]).reshape((6,1))
+        self.ee_cart_damping_dampVel_baseline = np.array([35, 35, 35, 10, 10, 1]).reshape((6,1))
+
+        self.ee_cart_stiffness_dampVel_fixed = np.array([100, 100, 100, 5, 5, 1]).reshape((6,1))
+        self.ee_cart_damping_dampVel_fixed = np.array([80, 80, 80, 10, 10, 1]).reshape((6,1))
+
+        self.max_cart_damp = 70                # max value of linear damping allowed
 
 
         # filter the reference that is generated, to avoid noise injection from the human-pose estimator
@@ -717,10 +721,64 @@ class BS_net:
             self.ee_cart_damping_cmd = self.ee_cart_damping_low
 
         else:
-            # if we are in a risky area, then rapid movement should be limited.
-             self.ee_cart_stiffness_cmd  =self.ee_cart_stiffness_dampVel
-             self.ee_cart_damping_cmd  =self.ee_cart_damping_dampVel
-        
+            # if we are in a risky area, then rapid movement should be limited if it would lead to
+            # increased strain. For this, we calculate the directional derivative of the strain map
+            # at the current location, along the direction given by the current (estimated) velocity.
+            # If the directional derivative is negative, then the movement is still safe. Otherwise,
+            # damping from the robot should be added.
+
+            # calculate the directional vector from the estimated velocities
+            vel_on_map = np.array([pe_dot, se_dot]) 
+            norm_vel = vel_on_map / np.linalg.norm(vel_on_map + 1e-6)
+
+            # calculate the directional derivative on the strain map
+            dStrain_dx = 0
+            dStrain_dy = 0
+            for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+                #first, retrieve explicitly the parameters of the function considered in this iteration
+                amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
+                x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
+                y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
+                sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
+                sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
+                offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
+
+                # then, compute the analytical (partial) derivatives of the strain map and add them
+                dStrain_dx += - amplitude * (pe/self.pe_normalizer - x0) / (sigma_x**2) * \
+                              np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
+                
+                dStrain_dy += - amplitude * (se/self.se_normalizer - y0) / (sigma_y**2) * \
+                              np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
+                
+            
+            dStrain_along_direction = np.dot(np.array([dStrain_dx, dStrain_dy]), norm_vel)
+
+            # if the directional derivative is negative, then movement is safe (we set low damping)
+            if dStrain_along_direction < 0:
+                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                self.ee_cart_damping_cmd = self.ee_cart_damping_low
+
+            else:
+                # # here we will change the damping of the interaction. However, we cannot do this without 
+                # # stability problems if we do not change the stiffness too.
+
+                # # I came up with a simple heuristic, in which stiff - stiff_low =  3 x (damp - damp_low)
+
+                # ratio = (current_strain - self.risky_strain)**2 + 1         # we add + 1 to avoid having damping close to 0
+                # damping  = ratio * self.ee_cart_damping_dampVel_baseline
+
+                # if damping[0] > self.max_cart_damp:
+                #     self.ee_cart_damping_cmd = self.max_cart_damp / damping[0] * damping
+                # else:
+                #     self.ee_cart_damping_cmd  = ratio * self.ee_cart_damping_dampVel_baseline
+
+                # self.ee_cart_stiffness_cmd = 3 * (self.ee_cart_damping_cmd[0] - self.ee_cart_damping_low[0]) * self.ee_cart_stiffness_low
+                # print(self.ee_cart_damping_cmd[0])
+                
+                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_dampVel_fixed
+                self.ee_cart_damping_cmd = self.ee_cart_damping_dampVel_fixed
+            
+
         # the current position is set as a reference
         # (we convert back to radians for compatibility with the rest of the code)
         self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))

@@ -206,11 +206,11 @@ class RealTimeStrainMapVisualizer:
         # if given, display the current 2D pose on the strainmap (plane of elevation, shoulder elevation)
         if pose_current is not None:
             marker_radius = 5      # define the radius of the marker for the current pose
-            pygame.draw.circle(self.screen, (255, 0, 0), self.remapPointOnScreen(np.rad2deg(pose_current)), marker_radius)
+            pygame.draw.circle(self.screen, (79, 121, 66), self.remapPointOnScreen(np.rad2deg(pose_current)), marker_radius)
 
         if vel_current is not None:
             pygame.draw.line(self.screen, 
-                             (255, 0, 0), 
+                             (79, 121, 66), 
                              self.remapPointOnScreen(np.rad2deg(pose_current)), 
                              self.remapPointOnScreen(np.rad2deg(pose_current+vel_current)), 
                              self.width_lines)

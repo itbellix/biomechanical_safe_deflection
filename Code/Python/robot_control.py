@@ -635,7 +635,7 @@ if __name__ == "__main__":
                     stiffness = np.array([300, 300, 300, 10, 10, 2])
                     # stiffness = np.array([200, 200, 200, 15, 15, 2])    # low stiffness (issue #162)
                     # stiffness = np.array([350, 350, 350, 45, 45, 10])   # high stiffness (issue #162)
-                    damping = 2*np.sqrt(stiffness)             # decrease damping to increase stability
+                    damping = np.sqrt(stiffness)             # decrease damping to increase stability
 
                     print("moving to initial position")
                     control_module.moveToEEDesiredPose(duration_movement, rate, precision, stiffness, damping)
