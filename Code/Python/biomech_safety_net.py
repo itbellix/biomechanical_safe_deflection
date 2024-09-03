@@ -183,7 +183,7 @@ class BS_net:
         self.num_gaussians = len(self.all_params_gaussians)//self.num_params_gaussian    # find the number of gaussians employed
 
 
-    def publishCartRef(self, shoulder_pose_ref, torque_ref, position_gh_in_base, base_R_sh, dist_gh_elbow):
+    def publishCartRef(self, shoulder_pose_ref, torque_ref, base_R_sh, dist_gh_elbow):
         """"
         This function publishes a given reference shoulder state as the equivalent 6D cartesian pose corresponding
         to the position of the elbow tip, expressed the world frame. The center of the shoulder in this frame needs 
@@ -196,7 +196,6 @@ class BS_net:
               elevation and axial rotation at a given time instant
             - torque_ref: 2x1 numpy array, storing the torques to be applied to the plane of elevation and 
               shoulder elevation (output of the trajectory optimization step)
-            - position_gh_in_base: the coordinates (px, py, pz) as a numpy array
             - base_R_sh: rotation matrix defining the orientation of the shoulder frame wrt the world frame
                          (as a scipy.spatial.transform.Rotation object)
             - dist_gh_elbow: the vector expressing the distance of the elbow tip from the GH center, expressed in the 
@@ -217,7 +216,10 @@ class BS_net:
         euler_angles_cmd = base_R_ee.as_euler('xyz') # store also equivalent Euler angles
 
         # find position for the end-effector origin
-        ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + position_gh_in_base
+        if experimental_params['estimate_gh_position'] and self.flag_receiving_shoulder_pose:
+            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + self.position_gh_in_base
+        else:
+            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + experimental_params['p_gh_in_base']
 
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
@@ -328,12 +330,15 @@ class BS_net:
         shoulder_state[0::2] = shoulder_pose_ref.reshape(-1, 1)
         self.x_opt = shoulder_state
 
+        # fix the position of the center of the shoulder/glenohumeral joint
+        self.position_gh_in_base = experimental_params['p_gh_in_base']
+
         # perform extra things if this is the first time we execute this
         if not self.flag_pub_trajectory:
             # We need to set up the structure to deal with the new thread, to allow 
             # continuous publication of the optimal trajectory
             self.publish_thread = threading.Thread(target=self.publish_continuous_trajectory, 
-                                                    args = (position_gh_in_base, base_R_sh, dist_gh_elbow))   # creating the thread
+                                                    args = (base_R_sh, dist_gh_elbow))   # creating the thread
             
             self.publish_thread.daemon = True   # this allows to terminate the thread when the main program ends
             self.flag_pub_trajectory = True     # update flag
@@ -349,6 +354,10 @@ class BS_net:
 
         # retrieve the current state as estimated on the robot's side
         self.state_values_current = np.array(data.data[0:6])        # update current pose
+        
+        if experimental_params['estimate_gh_position']:
+            # retrieve the current pose of the shoulder/glenohumeral center in the base frame
+            self.position_gh_in_base = np.array(data.data[6:9])
 
         if not self.speed_estimate:                                 # choose whether we use the velocity estimate or not
             self.state_values_current[1::2] = 0
@@ -394,7 +403,7 @@ class BS_net:
         print("Receiving current shoulder pose.")
 
 
-    def publish_continuous_trajectory(self, p_gh_in_base, rot_ee_in_base_0, dist_shoulder_ee):
+    def publish_continuous_trajectory(self, rot_ee_in_base_0, dist_shoulder_ee):
         """
         This function picks the most recent information regarding the optimal shoulder trajectory,
         converts it to end effector space and publishes the robot reference continuously. A flag enables/disables
@@ -428,7 +437,7 @@ class BS_net:
                             else:
                                 cmd_torques = None
 
-                        self.publishCartRef(cmd_shoulder_pose, cmd_torques, p_gh_in_base, rot_ee_in_base_0, dist_shoulder_ee)
+                        self.publishCartRef(cmd_shoulder_pose, cmd_torques, rot_ee_in_base_0, dist_shoulder_ee)
 
             rate.sleep()
 

@@ -108,7 +108,7 @@ class RobotControlModule:
         # define parameters for the filtering of the human state estimation
         self.alpha_p = 0.9                  # weight of the exponential moving average filter (position part)
         self.alpha_v = 0.9                  # weight of the exponential moving average filter (velocity part)
-        self.human_pose_estimated = np.zeros(9)
+        self.human_pose_estimated = np.zeros(12)    # contains q, q_dot, q_ddot, and position_gh_center_in_base (all are 3D vecs)
         self.last_timestamp = 0
         self.filter_initialized = False     # whether the filter applied on the human pose estimation has
                                             # already been initialized
@@ -150,11 +150,17 @@ class RobotControlModule:
         self.ee_twist_curr = np.array(data.velocity)                # value for the twist (v and omega, in base frame)
         # check if the robot has already reached its desired pose (if so, publish shoulder poses too)
         if self.initial_pose_reached:
-            R_ee = self.ee_pose_curr.R    # retrieve the rotation matrix defining orientation of EE frame
+            R_ee = self.ee_pose_curr.R                              # retrieve the rotation matrix defining orientation of EE frame
+            cart_pose_ee = self.ee_pose_curr.t                      # retrieve the vector defining 3D position of the EE (in robot base frame)
             sh_R_elb = np.transpose(experimental_params['base_R_shoulder'].as_matrix())@R_ee@np.transpose(experimental_params['elb_R_ee'].as_matrix())
 
-            cart_pose_ee = self.ee_pose_curr.t
-            direction_vector = cart_pose_ee - experimental_params['p_gh_in_base']
+            # calculate the instantaneous position of the center of the shoulder/glenohumeral joint
+            if experimental_params['estimate_gh_position']:
+                position_gh_in_base = cart_pose_ee + R_ee@experimental_params['p_gh_in_ee']
+            else:
+                position_gh_in_base = experimental_params['p_gh_in_base']
+                
+            direction_vector = cart_pose_ee - position_gh_in_base
             direction_vector_norm = direction_vector / np.linalg.norm(direction_vector)
 
             direction_vector_norm_in_shoulder = np.transpose(experimental_params['base_R_shoulder'].as_matrix())@direction_vector_norm
@@ -215,6 +221,9 @@ class RobotControlModule:
                 self.human_pose_estimated[6] = 0            # we initialize the accelerations to be 0
                 self.human_pose_estimated[7] = 0            # we initialize the accelerations to be 0
                 self.human_pose_estimated[8] = 0            # we initialize the accelerations to be 0
+                self.human_pose_estimated[9:] = position_gh_in_base     # also the position of the GH joint center is 
+                                                                        # part of the human pose
+
 
                 self.last_timestamp = rospy.Time.now().to_time()
 
@@ -227,6 +236,7 @@ class RobotControlModule:
             se_dot = self.alpha_v * se_dot + (1-self.alpha_v) * self.human_pose_estimated[3]
             ar = self.alpha_p * ar + (1-self.alpha_p) * self.human_pose_estimated[4]
             ar_dot = self.alpha_v * ar_dot + (1-self.alpha_v) * self.human_pose_estimated[5]
+            position_gh_in_base = self.alpha_p * position_gh_in_base + (1-self.alpha_p) * self.human_pose_estimated[9:]
 
             # retrieve accelerations differentiating numerically the velocities
             time_now = rospy.Time.now().to_time()
@@ -245,6 +255,7 @@ class RobotControlModule:
             self.human_pose_estimated[6] = pe_ddot
             self.human_pose_estimated[7] = se_ddot
             self.human_pose_estimated[8] = ar_ddot
+            self.human_pose_estimated[9:] = position_gh_in_base
 
             self.last_timestamp = time_now      # used as the timestamp of the previous information
 
@@ -253,7 +264,7 @@ class RobotControlModule:
 
             # build the message and fill it with information
             message = Float64MultiArray()
-            message.data = np.round(np.concatenate((np.array([pe, pe_dot, se, se_dot, ar, ar_dot]), xyz_ee)), 3)
+            message.data = np.round(np.concatenate((np.array([pe, pe_dot, se, se_dot, ar, ar_dot]), position_gh_in_base, xyz_ee)), 3)
 
             message_rmr = Float32MultiArray()
             message_rmr.data = np.round(np.array([pe, se, ar, pe_dot, se_dot, ar_dot, pe_ddot, se_ddot, ar_ddot, 0, 0, 0, time_now]), 3)

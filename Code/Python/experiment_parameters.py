@@ -17,7 +17,7 @@ path_to_repo = os.path.join(code_path, '..', '..')          # getting path to th
 loop_frequency = 20    # [Hz]
 
 # select here with which setup/subject we are working
-subject = 'subject2'       # list of available subjects: subject1, subject2, subject3
+subject = 'subject1'       # list of available subjects: subject1, subject2, subject3
 
 setup = 'newLab_facingRobot'        # list of setups: 'OldLab' (configuration that the robot had before 12/12/2023)
 
@@ -47,8 +47,10 @@ if setup=='newLab_facingRobot':
 
     base_R_shoulder = R.from_euler('x', rot_sh_in_base[0]) * R.from_euler('y', rot_sh_in_base[1]) * R.from_euler('z', rot_sh_in_base[2])
 
+    # define the initial position of the glenohumeral joint in the robot's base
+    # (this is used so that the robot knows where to go as a starting point)
     if subject == 'subject1':
-        position_gh_in_base = np.array([-0.9, 0, 0.62]) # position of the center of the shoulder frame (GH joint) in the base frame [m]
+        position_gh_in_base = np.array([-0.9, 0, 0.62])
     elif subject == 'subject2':
         position_gh_in_base = np.array([-0.9, 0, 0.68])
     elif subject == 'subject3':
@@ -90,16 +92,20 @@ ee_damping_sim = ee_damping
 # experimental parameters used by both the TO and the robot control modules
 l_brace = 0.02          # thickness of the brace [m]
 
+position_gh_in_ee = np.array([0, 0, l_arm+l_brace])     # position of the center of the shoulder frame (GH joint) in the EE frame [m]
+
 dist_shoulder_ee = np.array([0, -(l_arm+l_brace), 0])   # evaluate the distance between GH center and robot ee, in shoulder frame 
                                                         # (once the subject is wearing the brace)
 elb_R_ee = R.from_euler('x', -np.pi/2, degrees=False)   # rotation matrix expressing the orientation of the ee in the elbow frame
 
 experimental_params = {}
 experimental_params['p_gh_in_base'] = position_gh_in_base
+experimental_params['p_gh_in_ee'] = position_gh_in_ee
 experimental_params['base_R_shoulder'] = base_R_shoulder
 experimental_params['L_tot'] = l_arm + l_brace
 experimental_params['d_gh_ee_in_shoulder'] = dist_shoulder_ee
 experimental_params['elb_R_ee'] = elb_R_ee
+experimental_params['estimate_gh_position'] = True
 # -------------------------------------------------------------------------------
 # names of the ROS topics on which the shared communication between biomechanical-based optimization and robot control will happen
 shared_ros_topics = {}
