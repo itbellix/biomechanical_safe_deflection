@@ -17,7 +17,7 @@ path_to_repo = os.path.join(code_path, '..', '..')          # getting path to th
 loop_frequency = 20    # [Hz]
 
 # select here with which setup/subject we are working
-subject = 'subject1'       # list of available subjects: subject1
+subject = 'subject2'       # list of available subjects: subject1, subject2, subject3
 
 setup = 'newLab_facingRobot'        # list of setups: 'OldLab' (configuration that the robot had before 12/12/2023)
 
@@ -33,7 +33,10 @@ setup = 'newLab_facingRobot'        # list of setups: 'OldLab' (configuration th
 
 if subject=='subject1':
     l_arm = 0.32            # length of the subject's right arm, from the center of the glenohumeral (GH) joint to the elbow [m]
-    l_brace = 0.02          # thickness of the brace [m]
+elif subject == 'subject2':
+    l_arm = 0.35
+elif subject == 'subject3':
+    l_arm = 0.3
 
 
 if setup=='newLab_facingRobot':                  
@@ -46,6 +49,10 @@ if setup=='newLab_facingRobot':
 
     if subject == 'subject1':
         position_gh_in_base = np.array([-0.9, 0, 0.62]) # position of the center of the shoulder frame (GH joint) in the base frame [m]
+    elif subject == 'subject2':
+        position_gh_in_base = np.array([-0.9, 0, 0.68])
+    elif subject == 'subject3':
+        position_gh_in_base = np.array([-0.85, 0, 0.57])
 
     ar_offset = 0
 
@@ -81,6 +88,8 @@ ee_damping_sim = ee_damping
 
 # -------------------------------------------------------------------------------
 # experimental parameters used by both the TO and the robot control modules
+l_brace = 0.02          # thickness of the brace [m]
+
 dist_shoulder_ee = np.array([0, -(l_arm+l_brace), 0])   # evaluate the distance between GH center and robot ee, in shoulder frame 
                                                         # (once the subject is wearing the brace)
 elb_R_ee = R.from_euler('x', -np.pi/2, degrees=False)   # rotation matrix expressing the orientation of the ee in the elbow frame
