@@ -18,6 +18,9 @@ import argparse
 # import the strain visualizer
 import realTime_strainMap_visualizer as sv
 
+# import the nlps_module
+import nlps_module as nlps
+
 class BS_net:
     """
     Biomechanics Safety Net module.
@@ -121,6 +124,11 @@ class BS_net:
 
         # initialize the visualization module for the strain maps
         self.strain_visualizer = sv.RealTimeStrainMapVisualizer(self.X_norm, self.Y_norm, self.num_params_gaussian, self.pe_boundaries, self.se_boundaries)
+
+        # initialize the NLP on strain maps, together with the equivalent CasADi function and the input it requires
+        self.nlps = None
+        self.mpc_iter = None
+        self.input_mpc_call = None
 
         # ROS part
         # initialize ROS node and set required frequency
@@ -353,11 +361,12 @@ class BS_net:
             self.flag_receiving_shoulder_pose = True
 
         # retrieve the current state as estimated on the robot's side
-        self.state_values_current = np.array(data.data[0:6])        # update current pose
+        self.state_values_current = np.array(data.data[0:9])        # update current pose
+        # this is pe, pe_dt, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
         
         if experimental_params['estimate_gh_position']:
             # retrieve the current pose of the shoulder/glenohumeral center in the base frame
-            self.position_gh_in_base = np.array(data.data[6:9])
+            self.position_gh_in_base = np.array(data.data[9:12])
 
         if not self.speed_estimate:                                 # choose whether we use the velocity estimate or not
             self.state_values_current[1::2] = 0
@@ -793,6 +802,29 @@ class BS_net:
         self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
 
+    def assign_nlps(self, nlps_object):
+        """
+        This function takes care of embedding the NLP problem for planning on strain maps into the BSN.
+        """
+        self.nlps = nlps_object
+
+        # the overall NLP problem is formulated, meaning that its structure is determined based on the
+        # previous inputs
+        self.nlps.formulateNLP_functionDynamics()
+
+        # embed the whole NLP (solver included) into a CasADi function that can be called
+        # both the function and the inputs it needs are initialized here
+        self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuess()
+
+
+    def predict_future_state(self):
+        """
+        This function is used to predict the future state of the human body
+        """
+        if self.nlps == None:
+            pass
+
+
 # ----------------------------------------------------------------------------------------------
 
 if __name__ == '__main__':
@@ -817,6 +849,43 @@ if __name__ == '__main__':
 
         # initialize the biomechanics-safety net module
         bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=True)
+
+        # initialize the underlying nonlinear programming problem
+        opensimAD_ID = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_ID.casadi'))
+        opensimAD_FD = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_FD.casadi'))
+
+        nlps_instance = nlps.nlps_module(opensimAD_ID, opensimAD_FD)
+
+        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
+
+        x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
+        nlps_instance.initializeStateVariables(x)
+
+        u = ca.MX.sym('u', 2)   # control vector: [tau_theta, tau_psi], in Nm (along 2 coordinates of GH joint, phi is not controlled)  
+        nlps_instance.initializeControlVariables(u)
+
+        # define order of polynomials and collocation points for direct collocation 
+        d = 3
+        coll_type = 'legendre'
+        nlps_instance.populateCollocationMatrices(d, coll_type)
+
+        # for now, there is no cost function
+        nlps_instance.setCostFunction(0)
+
+        # choose solver and set its options
+        solver = 'ipopt'        # available solvers depend on CasADi interfaces
+
+        opts = {'ipopt.print_level': 5,         # options for the solver (check CasADi/solver docs for changing these)
+                'print_time': 0,
+                'ipopt.tol': 1e-3,
+                'error_on_fail':1,              # to guarantee transparency if solver fails
+                'expand':1,                     # to leverage analytical expression of the Hessian
+                'ipopt.linear_solver':'ma27'}
+        
+        nlps_instance.setSolverOptions(solver, opts)
+
+        # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
+        bsn_module.assign_nlps(nlps_instance)
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
@@ -865,6 +934,9 @@ if __name__ == '__main__':
                     
                 elif bsn_module.interaction_mode == 2:        # 
                     bsn_module.damp_unsafe_velocities()
+
+                elif bsn_module.interaction_mode == 3:
+                    pass
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.
             if not bsn_module.keepRunning():
