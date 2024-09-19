@@ -130,6 +130,10 @@ class BS_net:
         self.mpc_iter = None
         self.input_mpc_call = None
 
+        self.nlp_count = 0                          # keeps track of the amount of times the NLP is solved
+        self.avg_nlp_time = 0                       # average time required for each NLP iteration
+        self.failed_count = 0                       # number of failures encountered
+
         # ROS part
         # initialize ROS node and set required frequency
         rospy.init_node('BS_net_node')
@@ -362,7 +366,7 @@ class BS_net:
 
         # retrieve the current state as estimated on the robot's side
         self.state_values_current = np.array(data.data[0:9])        # update current pose
-        # this is pe, pe_dt, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
+        # this is pe, pe_dot, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
         
         if experimental_params['estimate_gh_position']:
             # retrieve the current pose of the shoulder/glenohumeral center in the base frame
@@ -378,11 +382,12 @@ class BS_net:
         # set up a logic that allows to start and update the visualization of the current strainmap at a given frequency
         # We set this fixed frequency to be 10 Hz
         if np.round(time_now-np.fix(time_now), 2) == np.round(time_now-np.fix(time_now),1):
-            self.strain_visualizer.updateStrainMap(self.all_params_gaussians, 
-                                                   self.state_values_current[[0,2]], 
-                                                   self.x_opt[[0,2],:],
-                                                   None, 
-                                                   self.state_values_current[[1,3]])
+            self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
+                                                   pose_current = self.state_values_current[[0,2]], 
+                                                   trajectory_current = self.x_opt[[0,2],:],
+                                                   goal_current = None, 
+                                                   vel_current = self.state_values_current[[1,3]],
+                                                   ar_current = None)
 
 
     def _flag_run_cb(self, data):
@@ -455,11 +460,11 @@ class BS_net:
         while True:
             try:
                 # Read user input (this happens asynchronously as executed in a thread)
-                interaction_mode = input("Select interaction mode (0, 1, or 2):\n")
+                interaction_mode = input("Select interaction mode (0, 1, 2 or 3):\n")
                 print(": interaction mode selected")
                 self.interaction_mode = int(interaction_mode)
             except ValueError:
-                print("Invalid input, please enter a number between 0 and 2")
+                print("Invalid input, please enter a number between 0 and 3")
 
 
     def setReferenceToCurrentPose(self):
@@ -468,7 +473,7 @@ class BS_net:
         substituted by the current state of the subject/patient sensed by the robot.
         """
         with self.x_opt_lock:
-            self.x_opt = self.state_values_current.reshape((6,1))
+            self.x_opt = self.state_values_current.reshape((9,1))[0:6]
             self.u_opt = np.zeros((2,1))
 
         # set the default stiffness and damping for the controller
@@ -581,6 +586,10 @@ class BS_net:
 
         The ellipses are defined with model's angles in degrees!
         """
+
+        # enable robot's reference trajectory publishing
+        self.flag_pub_trajectory = True
+
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)   # retrieve number of ellipses currently present in the map
 
         # retrieve the current point on the strain map
@@ -659,7 +668,6 @@ class BS_net:
                     y_cp_1quad = self.ellipse_y_1quad(x_cp_1quad, a_squared, b_squared)
 
                     # re-map point in the correct quadrant 
-                    # TODO: check what is happening here
                     pe_cp_ellipse = pe_ellipse_sgn * x_cp_1quad
                     se_cp_ellipse = se_ellipse_sgn * y_cp_1quad
 
@@ -704,6 +712,9 @@ class BS_net:
         Ideally, damping should be increased if the movement will result in increased strain, and
         kept low when the movement is "escaping" unsafe areas.
         """
+        # enable robot's reference trajectory publishing
+        self.flag_pub_trajectory = True
+
         # retrieve model's current pose and velocity
         # remember that the strain map is defined in degrees
         pe = np.rad2deg(self.state_values_current[0])
@@ -814,15 +825,101 @@ class BS_net:
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
         # both the function and the inputs it needs are initialized here
-        self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuess()
+        self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuesses()
 
 
     def predict_future_state(self):
         """
-        This function is used to predict the future state of the human body
+        This function is used to predict the future state of the human body, which is found assuming that the human
+        will continue exerting a constant torque along their DoFs. The future trajectory for the human model is saved
+        in the variable x_opt, that can be then visualized for debugging.
         """
-        if self.nlps == None:
-            pass
+        assert self.nlps is not None, "The NLP has not been defined yet, cannot continue"
+
+        # disable robot's reference trajectory publishing
+        self.flag_pub_trajectory = False
+
+        # initialize flag to monitor if the solver found an optimal solution
+        failed = 0
+
+        # first, we estimate the current human torques given the current position, velocity and acceleration of the model
+        u_hat_hum = self.nlps.opensimAD_ID(self.state_values_current)
+
+        # initial state for the human model
+        initial_state = self.state_values_current[0:6]
+
+
+        # if we are considering strain in our formulation, add the parameters of the strainmap to the numerical input
+        if self.nlps.num_gaussians>0:
+            params_g1 = self.nlps.all_params_gaussians[0:6]
+            params_g2 = self.nlps.all_params_gaussians[6:12]
+            params_g3 = self.nlps.all_params_gaussians[12:18]
+
+            # solve the NLP problem given the current state of the system (with strain information)
+            # we solve the NLP, and catch if there was an error. If so, notify the user and retry
+            try:
+                time_start = time.time()
+                u_opt, x_opt, j_opt, _, strain_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4], params_g1, params_g2, params_g3)
+                time_execution = time.time()-time_start
+                strain_opt = strain_opt.full().reshape(1, self.nlps.N+1, order='F')
+
+            except Exception as e:
+                print('Solver failed:', e)
+                print('retrying ...')
+                failed = 1
+
+        else:
+            # solve the NLP problem given the current state of the system (without strain information)
+            # we solve the NLP, and catch if there was an error. If so, notify the user and retry
+            try:
+                time_start = time.time()
+                u_opt, x_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4])
+                time_execution = time.time() - time_start
+
+                strain_opt = np.nan * np.ones((1, self.nlps.N+1))  # still fill the optimal strain values with NaNs
+
+            except Exception as e:
+                print('Solver failed:', e)
+                print('retrying ...')
+                failed = 1
+
+        self.nlp_count += 1         # update the number of iterations until now
+        self.failed_count += failed # update number of failed iterations
+
+        # only do the remaining steps if we have a new solution
+        if not failed:
+            # convert the solution to numpy arrays, and store them to be processed
+            x_opt = x_opt.full().reshape(self.nlps.dim_x, self.nlps.N+1, order='F')
+            u_opt = u_opt.full().reshape(self.nlps.dim_u, self.nlps.N, order='F')
+            xddot_opt = xddot_opt.full().reshape(int(self.nlps.dim_x/2), self.nlps.N, order='F')
+
+            # save the strain value
+            self.strain_opt = strain_opt
+            
+            # update the optimal values that are stored in the BSN module. 
+            # They can be accessed only if there is no other process that is modifying them
+            with self.x_opt_lock:
+                # self.x_opt = x_opt[:, 1::]      # the first point is discarded, as it is the current one
+                self.x_opt = x_opt[:, 2::]      # the first points are discarded, to compensate for relatively low stiffness of the controller
+                self.u_opt = u_opt[:,1::]       # same as above, to guarantee consistency
+
+            # update average running time
+            self.avg_nlp_time = ((self.avg_nlp_time * self.nlp_count) + time_execution) / (self.nlp_count+1)
+
+            # update the optimal values that are stored in the NLPS module as well
+            self.nlps.x_opt = x_opt      
+            self.nlps.u_opt = u_opt
+
+            # publish the optimal values to a ROS topic, so that they can be recorded during experiments
+            message = Float64MultiArray()
+            u_opt = np.concatenate((u_opt, np.atleast_2d(np.nan*np.ones((self.nlps.dim_u,1)))), axis = 1)  # adding one NaN to match dimensions of other arrays
+            activation = self.activation_level*self.delta_activation + self.min_activation
+            message.data = np.hstack((np.vstack((x_opt, u_opt, strain_opt)).flatten(), activation))    # stack the three outputs in a single message (plus activation), and flatten it for publishing
+            self.pub_optimization_output.publish(message)
+
+            return u_opt, x_opt, j_opt, strain_opt, xddot_opt
+
+            # TODO is now to test that the current acceleration is received and properly used by f_ID,AD
 
 
 # ----------------------------------------------------------------------------------------------
@@ -854,14 +951,14 @@ if __name__ == '__main__':
         opensimAD_ID = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_ID.casadi'))
         opensimAD_FD = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_FD.casadi'))
 
-        nlps_instance = nlps.nlps_module(opensimAD_ID, opensimAD_FD)
+        nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID)
 
         nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
 
         x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
         nlps_instance.initializeStateVariables(x)
 
-        u = ca.MX.sym('u', 2)   # control vector: [tau_theta, tau_psi], in Nm (along 2 coordinates of GH joint, phi is not controlled)  
+        u = ca.MX.sym('u', 3)   # control vector: [tau_theta, tau_psi, tau_phi], in Nm (along the DoFs of the GH joint)  
         nlps_instance.initializeControlVariables(u)
 
         # define order of polynomials and collocation points for direct collocation 
@@ -883,6 +980,8 @@ if __name__ == '__main__':
                 'ipopt.linear_solver':'ma27'}
         
         nlps_instance.setSolverOptions(solver, opts)
+
+        nlps_instance.setInitialState(x_0 = x_0)
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
         bsn_module.assign_nlps(nlps_instance)
@@ -932,11 +1031,12 @@ if __name__ == '__main__':
                 elif bsn_module.interaction_mode == 1:        # mode = 1: monitor unsafe zones
                     bsn_module.monitor_unsafe_zones()
                     
-                elif bsn_module.interaction_mode == 2:        # 
+                elif bsn_module.interaction_mode == 2:        # mode = 2: damp velocities in unsafe areas
                     bsn_module.damp_unsafe_velocities()
 
                 elif bsn_module.interaction_mode == 3:
-                    pass
+                    bsn_module.predict_future_state()
+                    
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.
             if not bsn_module.keepRunning():

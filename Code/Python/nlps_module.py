@@ -200,13 +200,10 @@ class nlps_module():
             RuntimeError("Unable to continue. The specified strainmaps are not correct. \
                          Check if the parameters provided are complete wrt the number of Gaussians specified. \
                          Note: we assume that 6 parameters per (2D) Gaussian are given")
-            
 
-        # fictitious initial state for building the structure of the NLP
-        self.x_0 = ca.MX.sym('x_0', self.dim_x)
-
-        # initialize the cost function
+        # initialize the cost function value
         J = 0
+
         if constraint_list is not None:
             u_max = constraint_list['u_max']
             u_min = constraint_list['u_min']
@@ -248,7 +245,7 @@ class nlps_module():
             # strainmap_sym = ca.Function('strainmap_sym', [self.x], [strainmap], {"allow_free":True})
             strainmap_sym = ca.Function('strainmap_sym', [self.x, p_g1, p_g2, p_g3], [strainmap])
 
-            # save the symbolic strainmap for some debugging (TODO: remove once things work)
+            # save the symbolic strainmap for some debugging
             self.strainmap_sym = strainmap_sym
 
         #  "Lift" initial conditions
@@ -264,7 +261,7 @@ class nlps_module():
         # the current value of ar and ar_dot are also input parameters for the problem
         phi_prm = self.opti.parameter(1)
         self.params_list.append(phi_prm)
-        phi_dot_prm = self.opti.parameter(1)             # these are just internal parameters, not modifiable from outside
+        phi_dot_prm = self.opti.parameter(1)             # this is an internal parameter, not modifiable from outside
 
         # Collect all states/controls, and strain along the trajectory
         Xs = [Xk]
@@ -293,14 +290,13 @@ class nlps_module():
             input_sys_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
                                             ca.repmat(phi_prm, 1, 3),       # phi at collocation points
                                             ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
-                                            ca.repmat(Uk_tot, 1, 3),            # controls at collocation points (constant)
-                                            ca.repmat(0, 1, 3))             # torque on axial rotation (zero, and constant)
+                                            ca.repmat(Uk_tot, 1, 3))        # controls at collocation points (constant)
 
             # evaluate ODE right-hand-side at collocation points
             ode = self.sys_dynamics(input_sys_dynamics)
 
             # for now, the quadrature is 0
-            quad = 0
+            quad = np.array([0, 0, 0]).reshape((1,3))
 
             # add contribution to quadrature function
             J = J + self.h*ca.mtimes(quad, self.B)
