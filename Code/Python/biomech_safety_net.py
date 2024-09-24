@@ -843,7 +843,7 @@ class BS_net:
         failed = 0
 
         # first, we estimate the current human torques given the current position, velocity and acceleration of the model
-        u_hat_hum = self.nlps.opensimAD_ID(self.state_values_current)
+        u_hat_hum = self.nlps.opensimAD_ID(self.state_values_current)[0:2]
 
         # initial state for the human model
         initial_state = self.state_values_current[0:6]
@@ -859,7 +859,7 @@ class BS_net:
             # we solve the NLP, and catch if there was an error. If so, notify the user and retry
             try:
                 time_start = time.time()
-                u_opt, x_opt, j_opt, _, strain_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4], params_g1, params_g2, params_g3)
+                x_opt, u_opt, j_opt, _, strain_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4], params_g1, params_g2, params_g3)
                 time_execution = time.time()-time_start
                 strain_opt = strain_opt.full().reshape(1, self.nlps.N+1, order='F')
 
@@ -873,7 +873,7 @@ class BS_net:
             # we solve the NLP, and catch if there was an error. If so, notify the user and retry
             try:
                 time_start = time.time()
-                u_opt, x_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4])
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4])
                 time_execution = time.time() - time_start
 
                 strain_opt = np.nan * np.ones((1, self.nlps.N+1))  # still fill the optimal strain values with NaNs
@@ -891,7 +891,6 @@ class BS_net:
             # convert the solution to numpy arrays, and store them to be processed
             x_opt = x_opt.full().reshape(self.nlps.dim_x, self.nlps.N+1, order='F')
             u_opt = u_opt.full().reshape(self.nlps.dim_u, self.nlps.N, order='F')
-            xddot_opt = xddot_opt.full().reshape(int(self.nlps.dim_x/2), self.nlps.N, order='F')
 
             # save the strain value
             self.strain_opt = strain_opt
@@ -917,9 +916,42 @@ class BS_net:
             message.data = np.hstack((np.vstack((x_opt, u_opt, strain_opt)).flatten(), activation))    # stack the three outputs in a single message (plus activation), and flatten it for publishing
             self.pub_optimization_output.publish(message)
 
-            return u_opt, x_opt, j_opt, strain_opt, xddot_opt
+            return u_opt, x_opt, j_opt, strain_opt
 
             # TODO is now to test that the current acceleration is received and properly used by f_ID,AD
+
+
+    def debug_NLPS_formulation(self):
+        # first solve the nlp problem
+        time_start = time.time()
+        x_opt, u_opt, sol = self.nlps.solveNLPOnce()
+        time_execution_0 = time.time() - time_start
+
+        print ("execution with Opti: ", np.round(time_execution_0,3))
+
+        # simulated initial state for the human model
+        sim_initial_state = np.concatenate((self.nlps.x_0, np.zeros((3,))))
+
+        # first, we estimate the current human torques given the current position, velocity and acceleration of the model
+        time_start = time.time()
+        u_hat_hum = self.nlps.opensimAD_ID(sim_initial_state)
+        u_hat_humPeSe = u_hat_hum[0:2]
+        u_hat_humAr = u_hat_hum[2]
+        time_execution_ID = time.time() - time_start
+
+        # solve the NLP once
+        time_start = time.time()
+        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(self.nlps.x_0, u_hat_humPeSe, u_hat_humAr, 0)
+        time_execution_1 = time.time() - time_start
+
+        
+        print ("execution with function: ", np.round(time_execution_1,3))
+
+        fig = plt.figure()
+        ax = fig.add_subplot()
+        ax.plot()
+
+
 
 
 # ----------------------------------------------------------------------------------------------
@@ -942,7 +974,7 @@ if __name__ == '__main__':
         from experiment_parameters import *     # this contains the experimental_params and the shared_ros_topics
 
         # are we debugging or not?
-        debug_mode = False
+        debug_mode = True
 
         # initialize the biomechanics-safety net module
         bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=True)
@@ -953,13 +985,19 @@ if __name__ == '__main__':
 
         nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID)
 
-        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
+        nlps_instance.setTimeHorizonAndDiscretization(N = 2, T = 0.4)
 
         x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
         nlps_instance.initializeStateVariables(x)
 
-        u = ca.MX.sym('u', 3)   # control vector: [tau_theta, tau_psi, tau_phi], in Nm (along the DoFs of the GH joint)  
+        u = ca.MX.sym('u', 2)   # control vector: [tau_theta, tau_psi], in Nm (along the DoFs of the GH joint)  
         nlps_instance.initializeControlVariables(u)
+
+        # define the constraints
+        u_max = 1e-5
+        u_min = -1e-5
+        constraint_list = {'u_max':u_max, 'u_min':u_min}
+        nlps_instance.setConstraints(constraint_list)
 
         # define order of polynomials and collocation points for direct collocation 
         d = 3
@@ -973,11 +1011,15 @@ if __name__ == '__main__':
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
 
         opts = {'ipopt.print_level': 5,         # options for the solver (check CasADi/solver docs for changing these)
+                # 'ipopt.mu_strategy': 'adaptive',
+                # 'ipopt.nlp_scaling_method': 'gradient-based',
                 'print_time': 0,
                 'ipopt.tol': 1e-3,
                 'error_on_fail':1,              # to guarantee transparency if solver fails
                 'expand':1,                     # to leverage analytical expression of the Hessian
-                'ipopt.linear_solver':'ma27'}
+                'ipopt.linear_solver':'ma27'
+                # 'ipopt.linear_solver':'mumps'
+                }
         
         nlps_instance.setSolverOptions(solver, opts)
 
@@ -985,6 +1027,9 @@ if __name__ == '__main__':
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
         bsn_module.assign_nlps(nlps_instance)
+
+        # debug the NLP formulation
+        bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully

@@ -121,7 +121,7 @@ class nlps_module():
 
     def setTimeHorizonAndDiscretization(self, N, T):
         self.T = T      # time horizon for the optimal control
-        self.N = N      # numeber of control intervals
+        self.N = N      # number of control intervals
         self.h = T/N
 
 
@@ -179,9 +179,15 @@ class nlps_module():
 
     def setInitialState(self, x_0):
         self.x_0 = x_0
+
+    def setConstraints(self, constraint_list):
+        """
+        We set the constraints as a list of elements.
+        """
+        self.constraint_list = constraint_list
      
 
-    def formulateNLP_functionDynamics(self, constraint_list = None, initial_guess_prim_vars = None, initial_guess_dual_vars = None):
+    def formulateNLP_functionDynamics(self, initial_guess_prim_vars = None, initial_guess_dual_vars = None):
         """"
         This takes care of formulating the specific problem that we are aiming to solve.
         """ 
@@ -204,9 +210,9 @@ class nlps_module():
         # initialize the cost function value
         J = 0
 
-        if constraint_list is not None:
-            u_max = constraint_list['u_max']
-            u_min = constraint_list['u_min']
+        if self.constraint_list is not None:
+            u_max = self.constraint_list['u_max']
+            u_min = self.constraint_list['u_min']
 
         # initialize empty list for the parameters used in the problem
         # the parameters collected here can be changed at runtime   
@@ -255,8 +261,10 @@ class nlps_module():
         self.opti.subject_to(Xk==init_state)
 
         # the control torques are parameters that can be changed at execution
-        estimated_human_torques = self.opti.parameter(self.dim_u)
-        self.params_list.append(estimated_human_torques)
+        estimated_human_torques_PeSe = self.opti.parameter(self.dim_u)
+        estimated_human_torques_Ar = self.opti.parameter(1)
+        self.params_list.append(estimated_human_torques_PeSe)
+        self.params_list.append(estimated_human_torques_Ar)
 
         # the current value of ar and ar_dot are also input parameters for the problem
         phi_prm = self.opti.parameter(1)
@@ -276,11 +284,12 @@ class nlps_module():
             Us.append(Uk)
 
             # limits to the additional controls that the robot interaction should generate
-            self.opti.subject_to(0 == Uk)
-            self.opti.subject_to(Uk == 0)
+            self.opti.subject_to(self.opti.bounded(u_min, Uk, u_max))
 
+            J = J + Uk[0]**2 + Uk[1]**2
+            
             # add the robot torque and the human torque together
-            Uk_tot = Uk + estimated_human_torques
+            Uk_tot = Uk + estimated_human_torques_PeSe
 
             # optimization variable (state) at collocation points
             Xc = self.opti.variable(self.dim_x, self.pol_order)
@@ -290,23 +299,12 @@ class nlps_module():
             input_sys_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
                                             ca.repmat(phi_prm, 1, 3),       # phi at collocation points
                                             ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
-                                            ca.repmat(Uk_tot, 1, 3))        # controls at collocation points (constant)
+                                            ca.repmat(Uk_tot, 1, 3),        # controls at collocation points (constant)
+                                            ca.repmat(estimated_human_torques_Ar, 1, 3))    # robot torque around uncontrolled DoF
 
-            # evaluate ODE right-hand-side at collocation points
+            # evaluate ODE right-hand-side at collocation points. This allows to simulate the trajectory forward
             ode = self.sys_dynamics(input_sys_dynamics)
 
-            # for now, the quadrature is 0
-            quad = np.array([0, 0, 0]).reshape((1,3))
-
-            # add contribution to quadrature function
-            J = J + self.h*ca.mtimes(quad, self.B)
-
-            # add acceleration values to the cost
-            J = J + self.gamma_acceleration * (self.h*(ca.mtimes(ode[1, :]**2, self.B))+self.h*(ca.mtimes(ode[3,:]**2, self.B)))
-
-            # add velocity values to the cost
-            J = J + self.gamma_velocities * (self.h*(ca.mtimes(ode[0, :]**2, self.B))+self.h*(ca.mtimes(ode[2,:]**2, self.B)))
-            
             # check if we care about the strain
             if self.num_gaussians>0:
                 # if so, add term related to current strain to the cost
@@ -325,7 +323,7 @@ class nlps_module():
             Pidot = ca.mtimes(Z, self.C)
 
             # match with ODE right-hand-side
-            self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4,:])    # theta, theta_dot, psi, psi_dot (no constraint phi)
+            self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta, theta_dot, psi, psi_dot (no constraint phi)
 
             # save coordinates' accelerations (only for the first collocation point)
             Xddot_s.append(ode[1::2, 0])
@@ -340,43 +338,42 @@ class nlps_module():
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
-        if self.num_gaussians>0:
-            # record the strain level at the final step
-            # (note that the strainmap is defined in degrees, so we convert our state to that)
-            strain_s.append(strainmap_sym(Xk*180/ca.pi, p_g1, p_g2, p_g3))
-            self.strain_s = ca.vertcat(*strain_s)
+        # if self.num_gaussians>0:
+        #     # record the strain level at the final step
+        #     # (note that the strainmap is defined in degrees, so we convert our state to that)
+        #     strain_s.append(strainmap_sym(Xk*180/ca.pi, p_g1, p_g2, p_g3))
+        #     self.strain_s = ca.vertcat(*strain_s)
 
-        # adding constraint to reach the final desired state
-        if self.constrain_final_vel:
-            self.opti.subject_to((Xk[1])**2<self.eps_final_vel)   # bound on final velocity
-            self.opti.subject_to((Xk[3])**2<self.eps_final_vel)   # bound on final velocity
+        # # adding constraint to reach the final desired state
+        # if self.constrain_final_vel:
+        #     self.opti.subject_to((Xk[1])**2<self.eps_final_vel)   # bound on final velocity
+        #     self.opti.subject_to((Xk[3])**2<self.eps_final_vel)   # bound on final velocity
 
         self.Us = ca.vertcat(*Us)
         self.Xs = ca.vertcat(*Xs)
         self.Xddot_s = ca.vertcat(*Xddot_s)
 
-        # explicitly provide an initial guess for the primal variables
-        if initial_guess_prim_vars is not None:
-            self.opti.set_initial(initial_guess_prim_vars)
+        # # explicitly provide an initial guess for the primal variables
+        # if initial_guess_prim_vars is not None:
+        #     self.opti.set_initial(initial_guess_prim_vars)
 
-        # explicitly provide an initial guess for the dual variables
-        if initial_guess_dual_vars is None:
-            initial_guess_dual_vars = np.zeros((self.opti.lam_g.shape))
-
-        self.opti.set_initial(self.opti.lam_g, initial_guess_dual_vars)
+        # # explicitly provide an initial guess for the dual variables
+        # if initial_guess_dual_vars is not None:
+        #     self.opti.set_initial(self.opti.lam_g, initial_guess_dual_vars)
 
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
-        self.opti.set_value(estimated_human_torques, 0)
+        self.opti.set_value(estimated_human_torques_PeSe, self.opensimAD_ID(np.concatenate((self.x_0, np.zeros((3,)))))[0:2])
+        self.opti.set_value(estimated_human_torques_Ar, self.opensimAD_ID(np.concatenate((self.x_0, np.zeros((3,)))))[2])
         self.opti.set_value(phi_prm, 0)
         self.opti.set_value(phi_dot_prm, 0)
 
-        if self.num_gaussians>0:
-            self.params_list.extend(tmp_param_list)     # append at the end the parameters for the strains
+        # if self.num_gaussians>0:
+        #     self.params_list.extend(tmp_param_list)     # append at the end the parameters for the strains
 
-            self.opti.set_value(p_g1, self.all_params_gaussians[0:6])   # TODO: hardcoded!
-            self.opti.set_value(p_g2, self.all_params_gaussians[6:12])
-            self.opti.set_value(p_g3, self.all_params_gaussians[12:18])
+        #     self.opti.set_value(p_g1, self.all_params_gaussians[0:6])   # TODO: hardcoded!
+        #     self.opti.set_value(p_g2, self.all_params_gaussians[6:12])
+        #     self.opti.set_value(p_g3, self.all_params_gaussians[12:18])
 
         # define the cost function to be minimized, and store its symbolic expression
         self.opti.minimize(J + ca.sumsqr(ca.vertcat(*self.params_list)))
@@ -447,9 +444,9 @@ class nlps_module():
                          Do so with formulateNLP()!")
         
         if self.num_gaussians>0:
-            symbolic_output_list = [self.Us, self.Xs, self.opti.lam_g, self.Js, self.strain_s, self.Xddot_s]  
+            symbolic_output_list = [self.Xs, self.Us, self.opti.lam_g, self.Js, self.strain_s, self.Xddot_s]  
         else:
-            symbolic_output_list = [self.Us, self.Xs, self.opti.lam_g, self.Js, self.Xddot_s] 
+            symbolic_output_list = [self.Xs, self.Us, self.opti.lam_g, self.Js, self.Xddot_s] 
 
         # inputs to the function
         input_list = self.params_list.copy()       # the parameters that are needed when building the NLP
