@@ -822,6 +822,7 @@ class BS_net:
         # the overall NLP problem is formulated, meaning that its structure is determined based on the
         # previous inputs
         self.nlps.formulateNLP_functionDynamics()
+        # self.nlps.formulateNLP_functionDynamics_IDintheloop()
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
         # both the function and the inputs it needs are initialized here
@@ -921,13 +922,149 @@ class BS_net:
             # TODO is now to test that the current acceleration is received and properly used by f_ID,AD
 
 
+    def debug_sysDynamics(self):
+        # simulated initial state for the human model
+        # the state is pe, pe_dot, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
+        num_reps = 100
+        sim_initial_state_perturbed = np.zeros((num_reps, 9))
+        sim_initial_state_perturbed[0, :] = np.concatenate((self.nlps.x_0, np.zeros((3,))))
+
+        ## SENSITIVITY ANALYSIS FOR THE ID
+        # get the corresponding human torques using OpenSimAD
+        # we do this num_reps times, with small perturbations of the initial state (the magnitude of the perturbation can be adjusted)
+        delta_perturbation_torque = 1e-3
+        delta_vec = np.zeros((num_reps, 9))
+
+        hum_torques_hat = np.zeros((num_reps, 3))
+        for count in range(0, num_reps):
+            if count > 0:
+                # the torque outputs will tell us how much a change in the input modifies the output
+                delta_vec[count, :] = delta_perturbation_torque * np.random.random(np.shape(sim_initial_state_perturbed[0,:])).reshape((9,))
+
+            sim_initial_state_perturbed [count, :] = sim_initial_state_perturbed[0, :] + delta_vec[count, :]
+
+            hum_torques_hat[count, :] = self.nlps.opensimAD_ID(sim_initial_state_perturbed[count, :]).full().reshape((3,))
+
+        # let's find the maximum variation for each component of the torque output
+        max_diff_tauPe = np.abs(np.max(hum_torques_hat[:,0]) - np.min(hum_torques_hat[:,0]))
+        max_diff_tauSe = np.abs(np.max(hum_torques_hat[:,1]) - np.min(hum_torques_hat[:,1]))
+        max_diff_tauAr = np.abs(np.max(hum_torques_hat[:,2]) - np.min(hum_torques_hat[:,2]))
+
+        # let's plot the results
+        # plot PE torques
+        fig = plt.figure()
+        ax = fig.add_subplot(131)
+        ax.scatter(np.ones((num_reps-1, 1)), hum_torques_hat[1:, 0], color = 'black')
+        ax.scatter(1, hum_torques_hat[0,0], color = 'red', s = 35)
+        ax.set_title("PE (max diff " + str(np.round(max_diff_tauPe, 6)) + ")")
+
+        # plot SE torques
+        ax = fig.add_subplot(132)
+        ax.scatter(np.ones((num_reps-1, 1)), hum_torques_hat[1:, 1], color = 'black')
+        ax.scatter(1, hum_torques_hat[0,1], color = 'red', s = 35)
+        ax.set_title("SE (max diff " + str(np.round(max_diff_tauSe, 6)) + ")")
+
+        # plot AR torques
+        ax = fig.add_subplot(133)
+        ax.scatter(np.ones((num_reps-1, 1)), hum_torques_hat[1:, 2], color = 'black')
+        ax.scatter(1, hum_torques_hat[0,2], color = 'red', s = 35)
+        ax.set_title("AR (max diff " + str(np.round(max_diff_tauAr, 6)) + ")")
+        fig.suptitle("Tau sensitivities (delta = " + str(delta_perturbation_torque) + ")")
+
+        ## SENSITIVITY ANALYSIS FOR THE FD  
+        # now we do the same sensitivity analysis for the system dynamics (as OpenSimAD function)
+
+        # let's start from the nominal input torque (corresponding to the unperturbed initial state)
+        hum_torque_inputSysDin = hum_torques_hat[0, :]
+
+        # get the corresponding derivative of the state using OpenSimAD
+        # we do this num_reps times, with small perturbations of the initial state (the magnitude of the perturbation can be adjusted)
+        num_reps = 100
+        delta_perturbation_acc = 1e-3
+        delta_vec = np.zeros((num_reps, 3))
+
+        acc_output = np.zeros((num_reps, 3))
+
+        for count in range(0, num_reps):
+            if count > 0:
+                # the torque outputs will tell us how much a change in the input modifies the output
+                delta_vec[count, :] = delta_perturbation_acc * np.random.random(np.shape(hum_torque_inputSysDin)).reshape((3,))
+
+            acc_output[count, :] = self.nlps.sys_dynamics(np.concatenate((sim_initial_state_perturbed[count, :6], hum_torque_inputSysDin + delta_vec[count, :]))).full().reshape((6,))[1::2]
+
+        # let's find the maximum output variation in the various DoF
+        max_diff_peDdot = np.abs(np.max(acc_output[:,0]) - np.min(acc_output[:,0]))
+        max_diff_seDdot = np.abs(np.max(acc_output[:,1]) - np.min(acc_output[:,1]))
+        max_diff_arDdot = np.abs(np.max(acc_output[:,2]) - np.min(acc_output[:,2]))
+
+        # let's plot the results
+        # plot PE accelerations
+        fig = plt.figure()
+        ax = fig.add_subplot(131)
+        ax.scatter(np.ones((num_reps-1, 1)), acc_output[1:, 0], color = 'black')
+        ax.scatter(1, acc_output[0,0], color = 'red', s = 35)
+        ax.set_title("PE (max diff " + str(np.round(max_diff_peDdot, 6)) + ")")
+
+        # plot SE accelerations
+        ax = fig.add_subplot(132)
+        ax.scatter(np.ones((num_reps-1, 1)), acc_output[1:, 1], color = 'black')
+        ax.scatter(1, acc_output[0,1], color = 'red', s = 35)
+        ax.set_title("SE (max diff " + str(np.round(max_diff_seDdot, 6)) + ")")
+
+        # plot AR accelerations
+        ax = fig.add_subplot(133)
+        ax.scatter(np.ones((num_reps-1, 1)), acc_output[1:, 2], color = 'black')
+        ax.scatter(1, acc_output[0,2], color = 'red', s = 35)
+        ax.set_title("AR (max diff " + str(np.round(max_diff_arDdot, 6)) + ")")
+        fig.suptitle("Acc. sensitivities (delta = " + str(delta_perturbation_acc) + ")")
+
+        plt.show()
+
+        aux = 0
+
+        
+
     def debug_NLPS_formulation(self):
         # first solve the nlp problem
         time_start = time.time()
-        x_opt, u_opt, sol = self.nlps.solveNLPOnce()
+        x_opt, u_opt, sol, x_opt_coll = self.nlps.solveNLPOnce()
         time_execution_0 = time.time() - time_start
 
         print ("execution with Opti: ", np.round(time_execution_0,3))
+
+        time_vec_knots = self.nlps.h * np.arange(0,self.nlps.N+1)
+        time_vec_colPoints = np.array([])
+        for index in range(0, self.nlps.N):
+            time_vec_colPoints = np.concatenate((time_vec_colPoints, time_vec_knots[index] + self.nlps.h * np.asarray(ca.collocation_points(self.nlps.pol_order, 'legendre'))))
+
+        index_pe = self.nlps.dim_x * np.arange(0,self.nlps.N+1)
+        fig = plt.figure()
+        ax = fig.add_subplot(211)
+        ax.scatter(time_vec_knots, x_opt[index_pe])         # plot state
+        ax.plot(time_vec_knots, x_opt[index_pe])
+        for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
+            ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 0], color = 'orange')
+            ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 1], color = 'blue')
+            ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 2], color = 'red')
+        ax.set_title("Plane of elevation")
+        ax = fig.add_subplot(212)
+        ax.scatter(time_vec_knots, x_opt[index_pe+2])
+        ax.plot(time_vec_knots, x_opt[index_pe+2])
+        for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
+            ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 0], color = 'orange')
+            ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 1], color = 'blue')
+            ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2,2], color = 'red')
+        ax.set_title("Shoulder elevation")
+
+        fig = plt.figure()
+        ax = fig.add_subplot(211)
+        ax.stairs(u_opt[0::2])
+        ax.set_title("Torque PE")
+        ax = fig.add_subplot(212)
+        ax.stairs(u_opt[1::2])
+        ax.set_title("Torque SE")
+
+        plt.show()
 
         # simulated initial state for the human model
         sim_initial_state = np.concatenate((self.nlps.x_0, np.zeros((3,))))
@@ -946,12 +1083,6 @@ class BS_net:
 
         
         print ("execution with function: ", np.round(time_execution_1,3))
-
-        fig = plt.figure()
-        ax = fig.add_subplot()
-        ax.plot()
-
-
 
 
 # ----------------------------------------------------------------------------------------------
@@ -985,12 +1116,12 @@ if __name__ == '__main__':
 
         nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID)
 
-        nlps_instance.setTimeHorizonAndDiscretization(N = 2, T = 0.4)
+        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 0.01)
 
         x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
         nlps_instance.initializeStateVariables(x)
 
-        u = ca.MX.sym('u', 2)   # control vector: [tau_theta, tau_psi], in Nm (along the DoFs of the GH joint)  
+        u = ca.MX.sym('u', 3)   # control vector: [tau_theta, tau_psi], in Nm (along the DoFs of the GH joint)  
         nlps_instance.initializeControlVariables(u)
 
         # define the constraints
@@ -1027,6 +1158,9 @@ if __name__ == '__main__':
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
         bsn_module.assign_nlps(nlps_instance)
+
+        # debug OpenSimAD functions
+        # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
         bsn_module.debug_NLPS_formulation()
