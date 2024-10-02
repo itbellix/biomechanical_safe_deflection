@@ -105,7 +105,7 @@ experimental_params['base_R_shoulder'] = base_R_shoulder
 experimental_params['L_tot'] = l_arm + l_brace
 experimental_params['d_gh_ee_in_shoulder'] = dist_shoulder_ee
 experimental_params['elb_R_ee'] = elb_R_ee
-experimental_params['estimate_gh_position'] = True
+experimental_params['estimate_gh_position'] = False
 # -------------------------------------------------------------------------------
 # names of the ROS topics on which the shared communication between biomechanical-based optimization and robot control will happen
 shared_ros_topics = {}
