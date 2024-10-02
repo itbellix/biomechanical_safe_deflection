@@ -83,6 +83,8 @@ class BS_net:
         self.speed_estimate = speed_estimate        # Are estimated velocities of the model computed?
                                                     # False: quasi_static assumption, True: updated through measurements
         
+        self.future_trajectory = None               # future trajectory of the human model
+
         # define the references
         self.x_opt = None
         self.u_opt = None
@@ -382,12 +384,22 @@ class BS_net:
         # set up a logic that allows to start and update the visualization of the current strainmap at a given frequency
         # We set this fixed frequency to be 10 Hz
         if np.round(time_now-np.fix(time_now), 2) == np.round(time_now-np.fix(time_now),1):
-            self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
-                                                   pose_current = self.state_values_current[[0,2]], 
-                                                   trajectory_current = self.x_opt[[0,2],:],
-                                                   goal_current = None, 
-                                                   vel_current = self.state_values_current[[1,3]],
-                                                   ar_current = None)
+            if self.future_trajectory is None:
+                self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
+                                                    pose_current = self.state_values_current[[0,2]], 
+                                                    reference_current = self.x_opt[[0,2],:],
+                                                    future_trajectory = None,
+                                                    goal_current = None, 
+                                                    vel_current = self.state_values_current[[1,3]],
+                                                    ar_current = None)
+            else:
+                    self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
+                                                    pose_current = self.state_values_current[[0,2]], 
+                                                    reference_current = self.x_opt[[0,2],:],
+                                                    future_trajectory = self.future_trajectory[[0,2],:],
+                                                    goal_current = None, 
+                                                    vel_current = self.state_values_current[[1,3]],
+                                                    ar_current = None)
 
 
     def _flag_run_cb(self, data):
@@ -821,7 +833,8 @@ class BS_net:
 
         # the overall NLP problem is formulated, meaning that its structure is determined based on the
         # previous inputs
-        self.nlps.formulateNLP_functionDynamics()
+        self.nlps.formulateNLP_newVersion()
+        # self.nlps.formulateNLP_functionDynamics()
         # self.nlps.formulateNLP_functionDynamics_IDintheloop()
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
@@ -829,7 +842,53 @@ class BS_net:
         self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuesses()
 
 
-    def predict_future_state(self):
+    def predict_future_state_kinematic(self, N, T):
+        """
+        This function is used to predict the future state of the human body, under the assumption that the current
+        velocities will be maintained in the future along all the DoFs. The current velocities are used to propagate
+        forward the state.
+        Inputs are the number N of time-steps to be considered in the prediction, and the total duration T of the
+        prediction horizon.
+        """
+        assert self.state_values_current is not None, "The current state of the human model is unknown"
+
+        # disable robot's reference trajectory publishing
+        self.flag_pub_trajectory = False
+
+        # initial state for the human model
+        initial_state = self.state_values_current[0:6]
+
+        # for the next N time-steps, predict the future states of the human model
+        future_states = np.zeros((6, N+1))
+        future_states[::2, 0] = initial_state[::2]      # initialize the first point of the state trajectory
+        future_states[1::2, :] = initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
+
+        for timestep in range(1, N+1):
+            future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
+
+        # the trajectory is saved as a parameter in the BSN module, to be analyzed for safety.
+        # In this way, we can also display it in real time on the strain map
+        self.future_trajectory = future_states[:, 1:]   # the first column is discarded, since it corresponds to x_0
+        
+        # TODO: implement safety check (are the future states all safe?)
+
+        # if yes, then we are safe and the current position is tracked
+        # choose Cartesian stiffness and damping for the robot's impedance controller
+        # we set low values so that subject can move (almost) freely
+        self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+        self.ee_cart_damping_cmd = self.ee_cart_damping_low
+
+        # (we convert back to radians for compatibility with the rest of the code)
+        self.x_opt = initial_state.reshape((6,1))
+
+        # if not, then we need to adjust stuff and TODO have the NLP running
+        # ...
+
+        # return the future trajectories
+        return future_states
+
+
+    def predict_future_state_old(self):
         """
         This function is used to predict the future state of the human body, which is found assuming that the human
         will continue exerting a constant torque along their DoFs. The future trajectory for the human model is saved
@@ -990,7 +1049,7 @@ class BS_net:
                 # the torque outputs will tell us how much a change in the input modifies the output
                 delta_vec[count, :] = delta_perturbation_acc * np.random.random(np.shape(hum_torque_inputSysDin)).reshape((3,))
 
-            acc_output[count, :] = self.nlps.sys_dynamics(np.concatenate((sim_initial_state_perturbed[count, :6], hum_torque_inputSysDin + delta_vec[count, :]))).full().reshape((6,))[1::2]
+            acc_output[count, :] = self.nlps.sys_fd_dynamics(np.concatenate((sim_initial_state_perturbed[count, :6], hum_torque_inputSysDin + delta_vec[count, :]))).full().reshape((6,))[1::2]
 
         # let's find the maximum output variation in the various DoF
         max_diff_peDdot = np.abs(np.max(acc_output[:,0]) - np.min(acc_output[:,0]))
@@ -1067,18 +1126,17 @@ class BS_net:
         plt.show()
 
         # simulated initial state for the human model
-        sim_initial_state = np.concatenate((self.nlps.x_0, np.zeros((3,))))
+        sim_initial_state =self.nlps.x_0
 
-        # first, we estimate the current human torques given the current position, velocity and acceleration of the model
-        time_start = time.time()
-        u_hat_hum = self.nlps.opensimAD_ID(sim_initial_state)
-        u_hat_humPeSe = u_hat_hum[0:2]
-        u_hat_humAr = u_hat_hum[2]
-        time_execution_ID = time.time() - time_start
+        # first, we estimate the future states given the initial one
+        fut_traj_value = np.zeros((self.nlps.dim_x, self.nlps.N))
+        fut_traj_value[:,0] = sim_initial_state
+        for timestep in range(1, self.nlps.N):
+            fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps.h * fut_traj_value[1::2, timestep-1]
 
         # solve the NLP once
         time_start = time.time()
-        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(self.nlps.x_0, u_hat_humPeSe, u_hat_humAr, 0)
+        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(self.nlps.x_0, fut_traj_value, 0)
         time_execution_1 = time.time() - time_start
 
         
@@ -1116,7 +1174,7 @@ if __name__ == '__main__':
 
         nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID)
 
-        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 0.01)
+        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
 
         x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
         nlps_instance.initializeStateVariables(x)
@@ -1214,7 +1272,7 @@ if __name__ == '__main__':
                     bsn_module.damp_unsafe_velocities()
 
                 elif bsn_module.interaction_mode == 3:
-                    bsn_module.predict_future_state()
+                    bsn_module.predict_future_state_kinematic(N = 10, T = 1)
                     
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.

@@ -16,7 +16,7 @@ class nlps_module():
     safely.
 
     """
-    def __init__(self, sys_dynamics, opensimAD_ID = None):
+    def __init__(self, sys_forw_dynamics, sys_inv_dynamics = None):
         """"
         Initialization
         """
@@ -41,10 +41,10 @@ class nlps_module():
         self.dim_u = 0
 
         # Systems dynamics as a CasADi function
-        self.sys_dynamics = sys_dynamics
+        self.sys_forw_dynamics = sys_forw_dynamics
 
         # Define the differentiable inverse dynamics with a CasADi function
-        self.opensimAD_ID = opensimAD_ID
+        self.sys_inv_dynamics = sys_inv_dynamics
 
         # Strainmap parameters
         self.num_gaussians = 0          # the number of 2D Gaussians used to approximate the current strainmap
@@ -126,12 +126,19 @@ class nlps_module():
         self.h = T/N
 
 
-    def setSystemDynamics(self, sys_dynamics):
+    def setSystemForwDynamics(self, sys_forw_dynamics):
         """
-        Utility to set the system dynamics. It can receive as an input either a CasADi callback
+        Utility to set the system forward dynamics. It can receive as an input either a CasADi callback
         (if an OpenSim model is to be used) or a CasADi function directly (if the ODE are know analytically).
         """
-        self.sys_dynamics = sys_dynamics
+        self.sys_forw_dynamics = sys_forw_dynamics
+
+
+    def setSystemInvDynamics(self, sys_inv_dynamics):
+        """
+        Utility to set the system inverse dynamics, as a CasADi function obtained through OpenSimAD.
+        """
+        self.sys_inv_dynamics = sys_inv_dynamics
     
 
     def initializeStateVariables(self, x):
@@ -192,9 +199,13 @@ class nlps_module():
         """"
         This takes care of formulating the specific problem that we are aiming to solve.
         """ 
-        if self.sys_dynamics is None:
-            RuntimeError("Unable to continue. The system dynamics have not been specified. \
-                         Do so with setSystemDynamics()!")
+        if self.sys_forw_dynamics is None:
+            RuntimeError("Unable to continue. The system forward dynamics have not been specified. \
+                         Do so with setSystemForwDynamics()!")
+            
+        if self.sys_inv_dynamics is None:
+            RuntimeError("Unable to continue. The system inverse dynamics have not been specified. \
+                         Do so with setSystemInvDynamics()!")
             
         if self.cost_function is None:
             RuntimeError("Unable to continue. The cost function have not been specified. \
@@ -298,14 +309,14 @@ class nlps_module():
 
             # we need to create a proper input to the casadi function
             # we want to evaluate x_dot at every point in the collocation mesh
-            input_sys_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
+            input_sys_forw_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
                                             ca.repmat(phi_prm, 1, 3),       # phi at collocation points
                                             ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
                                             ca.repmat(Uk_tot, 1, 3))        # controls at collocation points (constant)
                                             # ca.repmat(estimated_human_torques_Ar, 1, 3))    # robot torque around uncontrolled DoF
 
             # evaluate ODE right-hand-side at collocation points. This allows to simulate the trajectory forward
-            ode = self.sys_dynamics(input_sys_dynamics)
+            ode = self.sys_forw_dynamics(input_sys_forw_dynamics)
 
             # check if we care about the strain
             if self.num_gaussians>0:
@@ -366,8 +377,8 @@ class nlps_module():
 
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
-        self.opti.set_value(estimated_human_torques, self.opensimAD_ID(np.concatenate((self.x_0, np.zeros((3,))))))
-        # self.opti.set_value(estimated_human_torques_Ar, self.opensimAD_ID(np.concatenate((self.x_0, np.zeros((3,)))))[2])
+        self.opti.set_value(estimated_human_torques, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,))))))
+        # self.opti.set_value(estimated_human_torques_Ar, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,)))))[2])
         self.opti.set_value(phi_prm, 0)
         self.opti.set_value(phi_dot_prm, 0)
 
@@ -391,9 +402,13 @@ class nlps_module():
         This takes care of formulating the specific problem that we are aiming to solve, including the ID function call
         inside the optimization loop.
         """ 
-        if self.sys_dynamics is None:
+        if self.sys_forw_dynamics is None:
             RuntimeError("Unable to continue. The system dynamics have not been specified. \
-                         Do so with setSystemDynamics()!")
+                         Do so with setSystemForwDynamics()!")
+            
+        if self.sys_inv_dynamics is None:
+            RuntimeError("Unable to continue. The system dynamics have not been specified. \
+                         Do so with setSystemInvDynamics()!")
             
         if self.cost_function is None:
             RuntimeError("Unable to continue. The cost function have not been specified. \
@@ -450,9 +465,9 @@ class nlps_module():
                 # add the robot torque and the human torque together
                 Uk_tot = Uk + estimated_human_torques_0
             else:
-                Xk_dot = self.sys_dynamics(ca.vertcat(Xk[0:4], phi_prm, phi_dot_prm, Uk_tot))
+                Xk_dot = self.sys_forw_dynamics(ca.vertcat(Xk[0:4], phi_prm, phi_dot_prm, Uk_tot))
 
-                estimated_human_torques_k = self.opensimAD_ID(ca.vertcat(Xk, Xk_dot[1::2]))
+                estimated_human_torques_k = self.sys_inv_dynamics(ca.vertcat(Xk, Xk_dot[1::2]))
 
                 Uk_tot = Uk + estimated_human_torques_k
 
@@ -469,14 +484,14 @@ class nlps_module():
 
             # we need to create a proper input to the casadi function
             # we want to evaluate x_dot at every point in the collocation mesh
-            input_sys_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
+            input_sys_forw_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
                                             ca.repmat(phi_prm, 1, 3),       # phi at collocation points
                                             ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
                                             ca.repmat(Uk_tot, 1, 3))        # controls at collocation points (constant)
                                             # ca.repmat(estimated_human_torques_Ar, 1, 3))    # robot torque around uncontrolled DoF
 
             # evaluate ODE right-hand-side at collocation points. This allows to simulate the trajectory forward
-            ode = self.sys_dynamics(input_sys_dynamics)
+            ode = self.sys_forw_dynamics(input_sys_forw_dynamics)
 
             # get interpolating points of collocation polynomial
             Z = ca.horzcat(Xk, Xc)
@@ -520,13 +535,162 @@ class nlps_module():
 
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
-        self.opti.set_value(estimated_human_torques_0, self.opensimAD_ID(np.concatenate((self.x_0, np.zeros((3,))))))
-        # self.opti.set_value(estimated_human_torques_Ar, self.opensimAD_ID(np.concatenate((self.x_0, np.zeros((3,)))))[2])
+        self.opti.set_value(estimated_human_torques_0, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,))))))
+        # self.opti.set_value(estimated_human_torques_Ar, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,)))))[2])
         self.opti.set_value(phi_prm, 0)
         self.opti.set_value(phi_dot_prm, 0)
 
         # define the cost function to be minimized, and store its symbolic expression
         self.opti.minimize(J + ca.sumsqr(ca.vertcat(*self.params_list)))
+        self.Js = J
+
+        # set flag indicating process was successful
+        self.nlp_is_formulated = True
+
+
+    def formulateNLP_newVersion(self):
+        """
+        New NLP relying on minimal deviations from given trajectories.
+        """
+
+        if self.sys_forw_dynamics is None:
+            RuntimeError("Unable to continue. The system forward dynamics have not been specified. \
+                         Do so with setSystemForwDynamics()!")
+            
+        if self.sys_inv_dynamics is None:
+            RuntimeError("Unable to continue. The system inverse dynamics have not been specified. \
+                         Do so with setSystemInvDynamics()!")
+            
+        if self.cost_function is None:
+            RuntimeError("Unable to continue. The cost function have not been specified. \
+                         Do so with setCostFunction()!")
+            
+        if len(self.all_params_gaussians) == self.num_gaussians * 6:
+            if len(self.all_params_gaussians)==0:
+                print("No (complete) information about strainmaps have been included \nThe NLP will not consider them")
+        else:
+            RuntimeError("Unable to continue. The specified strainmaps are not correct. \
+                         Check if the parameters provided are complete wrt the number of Gaussians specified. \
+                         Note: we assume that 6 parameters per (2D) Gaussian are given")
+
+        # initialize the cost function value
+        J = 0
+
+        # weights of the cost function
+        w_traj = 1
+        w_torque = 1
+
+        # tolerances 
+        delta_vel = np.deg2rad(10)  # on the final velocity (in rad/s)
+        delta_torque = 0.05         # on the final torque values (in N/m)
+
+        # initialize empty list for the parameters used in the problem
+        # the parameters collected here can be changed at runtime   
+        self.params_list = []
+
+        #  "Lift" initial conditions
+        Xk = self.opti.variable(self.dim_x)
+        init_state = self.opti.parameter(self.dim_x)     # parametrize initial condition
+        self.params_list.append(init_state)              # add the parameter to the list of parameters for the NLP
+        self.opti.subject_to(Xk==init_state)
+
+        # parametrize the future human states (if no robot intervention is given)
+        future_trajectory_0 = self.opti.parameter(self.dim_x, self.N)
+        self.params_list.append(future_trajectory_0)
+
+        # the current value of ar and ar_dot are also input parameters for the problem
+        phi_prm = self.opti.parameter(1)
+        self.params_list.append(phi_prm)
+        phi_dot_prm = self.opti.parameter(1)             # this is an internal parameter, not modifiable from outside
+
+        # Collect all states/controls, and strain along the trajectory
+        Xs = [Xk]
+        Xs_collocation = []
+        Us = []
+        Xddot_s = []
+        strain_s = []
+
+        # formulate the NLP
+        for k in range(self.N):
+            # New NLP variable for the control
+            Uk = self.opti.variable(self.dim_u)
+            Us.append(Uk)
+
+            # in the cost function, we weight:
+            # - the control effort difference with respect to the torques necessary to mantain the current state
+            # - the deviation from the estimated future states
+            stationary_state_k = ca.vertcat(Xk[0], 0, Xk[2], 0, Xk[4], 0)
+            torque_stabil_k = self.sys_inv_dynamics(ca.vertcat(stationary_state_k, np.zeros((3,))))
+            J = J \
+                + w_torque * ca.sumsqr(Uk - torque_stabil_k) \
+                + w_traj * ca.sumsqr(Xk - future_trajectory_0[:, k])
+
+            # optimization variable (state) at collocation points
+            Xc = self.opti.variable(self.dim_x, self.pol_order)
+            Xs_collocation.append(Xc)
+
+            # we need to create a proper input to the casadi function
+            # we want to evaluate x_dot at every point in the collocation mesh
+            input_sys_forw_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
+                                            ca.repmat(phi_prm, 1, 3),       # phi at collocation points
+                                            ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
+                                            ca.repmat(Uk, 1, 3))        # controls at collocation points (constant)
+            
+            # evaluate ODE right-hand-side at collocation points. This allows to simulate the trajectory forward
+            ode = self.sys_forw_dynamics(input_sys_forw_dynamics)
+
+            # get interpolating points of collocation polynomial
+            Z = ca.horzcat(Xk, Xc)
+
+            # get slope of interpolating polynomial (normalized)
+            Pidot = ca.mtimes(Z, self.C)
+
+            # match with ODE right-hand-side (only part of the state, to plan onto 2D strain maps)
+            self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta, theta_dot, psi, psi_dot (no constraint phi)
+
+            # save coordinates' accelerations (only for the first collocation point)
+            Xddot_s.append(ode[1::2, 0])
+
+            # state at the end of collocation interval
+            Xk_end = ca.mtimes(Z, self.D)
+
+            # new decision variable for state at the end of interval
+            Xk = self.opti.variable(self.dim_x)
+            Xs.append(Xk)
+
+            # continuity constraint
+            self.opti.subject_to(Xk_end==Xk)
+
+        # bounding final velocities
+        self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
+        self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
+
+        # bounding final torques 
+        # (we need to resort to ID here, to find the torques that can stabilize the final state)
+        torque_stabil = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
+        self.opti.subject_to(self.opti.bounded(torque_stabil - delta_torque, Uk, torque_stabil + delta_torque))
+
+        # manipulate variables to retrieve their values after the NLP is solved
+        self.Us = ca.vertcat(*Us)
+        self.Xs = ca.vertcat(*Xs)
+        self.Xs_collocation = ca.vertcat(*Xs_collocation)
+        self.Xddot_s = ca.vertcat(*Xddot_s)
+
+        # find the most likely evolution of the human state in the next N timesteps
+        # (this is used to initialize the future_trajectory_0 parameter)
+        fut_traj_value = np.zeros((self.dim_x, self.N))
+        fut_traj_value[:,0] = self.x_0
+        for timestep in range(1, self.N):
+            fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.h * fut_traj_value[1::2, timestep-1]
+
+        # set the values of the parameters (these will be changed at runtime)
+        self.opti.set_value(init_state, self.x_0)
+        self.opti.set_value(future_trajectory_0, fut_traj_value)
+        self.opti.set_value(phi_prm, 0)
+        self.opti.set_value(phi_dot_prm, 0)
+
+        # define the cost function to be minimized, and store its symbolic expression
+        self.opti.minimize(J)
         self.Js = J
 
         # set flag indicating process was successful

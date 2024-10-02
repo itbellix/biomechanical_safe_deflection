@@ -148,7 +148,7 @@ class RealTimeStrainMapVisualizer:
             self.screen.blit(caption_text, np.array([10, self.remapPointOnScreen(np.array([0, ticks[i]]))[1]-4*(num_ticks -i)]))
 
 
-    def updateStrainMap(self, list_params, pose_current = None, trajectory_current = None, goal_current = None, vel_current = None, ar_current = None):
+    def updateStrainMap(self, list_params, pose_current = None, reference_current = None, future_trajectory = None, goal_current = None, vel_current = None, ar_current = None):
         """
         This function allows to update the strainmap.
         Inputs:
@@ -216,11 +216,18 @@ class RealTimeStrainMapVisualizer:
                              self.width_lines)
 
         # if given, display the reference trajectory scattering its points
-        if trajectory_current is not None:
+        if reference_current is not None:
             traj_point_radius = 3
             
-            for index in range(np.shape(trajectory_current)[1]):
-                pygame.draw.circle(self.screen, (0, 0, 255), self.remapPointOnScreen(np.rad2deg(trajectory_current[:,index])), traj_point_radius)
+            for index in range(np.shape(reference_current)[1]):
+                pygame.draw.circle(self.screen, (0, 0, 255), self.remapPointOnScreen(np.rad2deg(reference_current[:,index])), traj_point_radius)
+
+        # if given, display the future states of the human model
+        if future_trajectory is not None:
+            traj_point_radius = 3
+            
+            for index in range(np.shape(future_trajectory)[1]):
+                pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(future_trajectory[:,index])), traj_point_radius)
 
         # visualize also the goal on the current strainmap (if it has been set)
         if goal_current is not None:
