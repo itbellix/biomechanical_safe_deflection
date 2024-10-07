@@ -846,14 +846,20 @@ class BS_net:
         """
         This function is used to predict the future state of the human body, under the assumption that the current
         velocities will be maintained in the future along all the DoFs. The current velocities are used to propagate
-        forward the state.
+        forward the state, by checking that it remains always safe with respect to (elliptical) unsafe zones.
+
         Inputs are the number N of time-steps to be considered in the prediction, and the total duration T of the
         prediction horizon.
         """
         assert self.state_values_current is not None, "The current state of the human model is unknown"
 
         # disable robot's reference trajectory publishing
-        self.flag_pub_trajectory = False
+        self.flag_pub_trajectory = True
+
+        # retrieve number of (elliptical) unsafe zones present on current strain map
+        num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
+
+        self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
         initial_state = self.state_values_current[0:6]
@@ -862,27 +868,49 @@ class BS_net:
         future_states = np.zeros((6, N+1))
         future_states[::2, 0] = initial_state[::2]      # initialize the first point of the state trajectory
         future_states[1::2, :] = initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
-
+        
         for timestep in range(1, N+1):
+            # retrieve estimation for future human state at current time step (assuming constant velocity)
             future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
 
-        # the trajectory is saved as a parameter in the BSN module, to be analyzed for safety.
+            # check that the estimated point of the trajectory will be safe
+            # (for now, this is done in 2D for PE and SE only)
+            for i in range(num_ellipses):
+                a_squared = self.all_params_ellipses[self.num_params_ellipses*i+2]
+                b_squared = self.all_params_ellipses[self.num_params_ellipses*i+3]
+                if a_squared is not None and b_squared is not None:     # if the ellipse really exists
+                    x0 = self.all_params_ellipses[self.num_params_ellipses*i]
+                    y0 = self.all_params_ellipses[self.num_params_ellipses*i+1]
+
+                    # note that we use normalized variables here (the ellipses are defined in degrees)
+                    self.in_zone_i[timestep, i] = int(((np.rad2deg(future_states[0, timestep])-x0)**2/a_squared + (np.rad2deg(future_states[2, timestep])-y0)**2/b_squared) < 1)
+
+                    # update strain visualization information for plotting the ellipse
+                    # this needs to be x0, y0, 2a, 2b
+                    params_ellipse_viz = np.array([x0, y0, 2*np.sqrt(a_squared), 2*np.sqrt(b_squared)]).reshape((1, self.num_params_ellipses))
+
+                    # update the ellipses for plotting
+                    self.strain_visualizer.update_ellipse_params(params_ellipse_viz, force = True)
+
+        # the trajectory is saved as a parameter in the BSN module.
         # In this way, we can also display it in real time on the strain map
         self.future_trajectory = future_states[:, 1:]   # the first column is discarded, since it corresponds to x_0
-        
-        # TODO: implement safety check (are the future states all safe?)
 
-        # if yes, then we are safe and the current position is tracked
-        # choose Cartesian stiffness and damping for the robot's impedance controller
-        # we set low values so that subject can move (almost) freely
-        self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-        self.ee_cart_damping_cmd = self.ee_cart_damping_low
+        # let's sum up the flags, and see if any of the future states will be usafe
+        num_unsafe = int(self.in_zone_i.sum())
 
-        # (we convert back to radians for compatibility with the rest of the code)
-        self.x_opt = initial_state.reshape((6,1))
+        if num_unsafe == 0:
+            # if there is no future state which is unsafe, the current position is tracked
+            # choose Cartesian stiffness and damping for the robot's impedance controller
+            # we set low values so that subject can move (almost) freely
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+            self.ee_cart_damping_cmd = self.ee_cart_damping_low
 
-        # if not, then we need to adjust stuff and TODO have the NLP running
-        # ...
+            self.x_opt = self.state_values_current[0:6].reshape((6,1))
+            print(".")
+        else:
+            # if not, then we need to adjust stuff and TODO have the NLP running
+            print("Future pose will be unsafe!")
 
         # return the future trajectories
         return future_states
@@ -1078,9 +1106,6 @@ class BS_net:
         fig.suptitle("Acc. sensitivities (delta = " + str(delta_perturbation_acc) + ")")
 
         plt.show()
-
-        aux = 0
-
         
 
     def debug_NLPS_formulation(self):
@@ -1117,10 +1142,10 @@ class BS_net:
 
         fig = plt.figure()
         ax = fig.add_subplot(211)
-        ax.stairs(u_opt[0::2])
+        ax.stairs(u_opt[0::3])
         ax.set_title("Torque PE")
         ax = fig.add_subplot(212)
-        ax.stairs(u_opt[1::2])
+        ax.stairs(u_opt[1::3])
         ax.set_title("Torque SE")
 
         plt.show()
@@ -1136,7 +1161,7 @@ class BS_net:
 
         # solve the NLP once
         time_start = time.time()
-        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(self.nlps.x_0, fut_traj_value, 0)
+        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value, 0)
         time_execution_1 = time.time() - time_start
 
         
@@ -1221,7 +1246,7 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        bsn_module.debug_NLPS_formulation()
+        # bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
