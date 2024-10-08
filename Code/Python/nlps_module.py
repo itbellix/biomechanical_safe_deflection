@@ -584,6 +584,14 @@ class nlps_module():
         delta_vel = np.deg2rad(5)  # on the final velocity (in rad/s)
         delta_torque = 0.05         # on the final torque values (in N/m)
 
+        # find the most likely evolution of the human state in the next N time steps
+        # (this is used to initialize the future_trajectory_0 parameter)
+        fut_traj_value = np.zeros((self.dim_x, self.N))
+        fut_traj_value[:,0] = self.x_0
+        fut_traj_value[1::2, :] = self.x_0[1::2][:, np.newaxis]    # velocities are assumed to be constant
+        for timestep in range(1, self.N):
+            fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.h * fut_traj_value[1::2, timestep-1]
+
         # initialize empty list for the parameters used in the problem
         # the parameters collected here can be changed at runtime   
         self.params_list = []
@@ -593,12 +601,14 @@ class nlps_module():
         init_state = self.opti.parameter(self.dim_x)     # parametrize initial condition
         self.params_list.append(init_state)              # add the parameter to the list of parameters for the NLP
         self.opti.subject_to(Xk==init_state)
+        self.opti.set_initial(Xk, self.x_0)
 
         # parametrize the future human states (if no robot intervention is given)
         future_trajectory_0 = self.opti.parameter(self.dim_x, self.N)
         self.params_list.append(future_trajectory_0)
 
         # the current value of ar and ar_dot are also input parameters for the problem
+        # TODO: remove when expanding to 3D (it will be more expensive computationally!)
         phi_prm = init_state[4]
         phi_dot_prm = self.opti.parameter(1)             # this is an internal parameter, not modifiable from outside
 
@@ -632,7 +642,11 @@ class nlps_module():
             input_sys_forw_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
                                             ca.repmat(phi_prm, 1, 3),       # phi at collocation points
                                             ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
-                                            ca.repmat(Uk, 1, 3))        # controls at collocation points (constant)
+                                            ca.repmat(Uk, 1, 3))            # controls at collocation points (constant)
+            
+            # TODO: add to expand to 3D
+            # input_sys_forw_dynamics = ca.vertcat(Xc,                     # theta, theta dot, psi, psi_dot, phi, phi_dot at collocation points
+            #                                     ca.repmat(Uk, 1, 3))     # controls at collocation points (constant)
             
             # evaluate ODE right-hand-side at collocation points. This allows to simulate the trajectory forward
             ode = self.sys_forw_dynamics(input_sys_forw_dynamics)
@@ -680,14 +694,6 @@ class nlps_module():
         self.Xs = ca.vertcat(*Xs)
         self.Xs_collocation = ca.vertcat(*Xs_collocation)
         self.Xddot_s = ca.vertcat(*Xddot_s)
-
-        # find the most likely evolution of the human state in the next N timesteps
-        # (this is used to initialize the future_trajectory_0 parameter)
-        fut_traj_value = np.zeros((self.dim_x, self.N))
-        fut_traj_value[:,0] = self.x_0
-        fut_traj_value[1::2, :] = self.x_0[1::2][:, np.newaxis]    # velocities are assumed to be constant
-        for timestep in range(1, self.N):
-            fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.h * fut_traj_value[1::2, timestep-1]
 
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
