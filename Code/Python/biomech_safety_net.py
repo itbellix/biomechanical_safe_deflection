@@ -1123,63 +1123,119 @@ class BS_net:
 
         print ("execution with Opti: ", np.round(time_execution_0,3))
 
-        time_vec_knots = self.nlps.h * np.arange(0,self.nlps.N+1)
-        time_vec_colPoints = np.array([])
-        for index in range(0, self.nlps.N):
-            time_vec_colPoints = np.concatenate((time_vec_colPoints, time_vec_knots[index] + self.nlps.h * np.asarray(ca.collocation_points(self.nlps.pol_order, 'legendre'))))
+        # time_vec_knots = self.nlps.h * np.arange(0,self.nlps.N+1)
+        # time_vec_colPoints = np.array([])
+        # for index in range(0, self.nlps.N):
+        #     time_vec_colPoints = np.concatenate((time_vec_colPoints, time_vec_knots[index] + self.nlps.h * np.asarray(ca.collocation_points(self.nlps.pol_order, 'legendre'))))
 
-        index_pe = self.nlps.dim_x * np.arange(0,self.nlps.N+1)
-        fig = plt.figure()
-        ax = fig.add_subplot(211)
-        ax.scatter(time_vec_knots, x_opt[index_pe])         # plot state
-        ax.plot(time_vec_knots, x_opt[index_pe])
-        for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
-            ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 0], color = 'orange')
-            ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 1], color = 'blue')
-            ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 2], color = 'red')
-        ax.set_title("Plane of elevation")
-        ax = fig.add_subplot(212)
-        ax.scatter(time_vec_knots, x_opt[index_pe+2])
-        ax.plot(time_vec_knots, x_opt[index_pe+2])
-        for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
-            ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 0], color = 'orange')
-            ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 1], color = 'blue')
-            ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2,2], color = 'red')
-        ax.set_title("Shoulder elevation")
+        # index_pe = self.nlps.dim_x * np.arange(0,self.nlps.N+1)
 
-        fig = plt.figure()
-        ax = fig.add_subplot(211)
-        ax.stairs(u_opt[0::3])
-        ax.set_title("Torque PE")
-        ax = fig.add_subplot(212)
-        ax.stairs(u_opt[1::3])
-        ax.set_title("Torque SE")
+        # fig = plt.figure()
+        # ax = fig.add_subplot(211)
+        # ax.scatter(time_vec_knots, x_opt[index_pe])         # plot state
+        # ax.plot(time_vec_knots, x_opt[index_pe])
+        # for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
+        #     ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 0], color = 'orange')
+        #     ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 1], color = 'blue')
+        #     ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 2], color = 'red')
+        # ax.set_title("Plane of elevation")
+        # ax = fig.add_subplot(212)
+        # ax.scatter(time_vec_knots, x_opt[index_pe+2])
+        # ax.plot(time_vec_knots, x_opt[index_pe+2])
+        # for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
+        #     ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 0], color = 'orange')
+        #     ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 1], color = 'blue')
+        #     ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2,2], color = 'red')
+        # # ax.set_title("Shoulder elevation")
 
-        traj_opt = x_opt.reshape((6, 11), order='F')[:, 1::]
+        # fig = plt.figure()
+        # ax = fig.add_subplot(211)
+        # ax.stairs(u_opt[0::3])
+        # ax.set_title("Torque PE")
+        # ax = fig.add_subplot(212)
+        # ax.stairs(u_opt[1::3])
+        # ax.set_title("Torque SE")
 
+        # traj_opt = x_opt.reshape((6, 11), order='F')[:, 1::]
 
-        fig = plt.figure()
-        ax = fig.add_subplot()
-        ax.scatter(traj_opt[0, :], traj_opt[2, :])
+        # fig = plt.figure()
+        # ax = fig.add_subplot()
+        # ax.scatter(traj_opt[0, :], traj_opt[2, :])
 
-        plt.show()
+        # plt.show()
 
         # simulated initial state for the human model
-        sim_initial_state =self.nlps.x_0
+        # sim_initial_state =self.nlps.x_0
 
-        # first, we estimate the future states given the initial one
-        fut_traj_value = np.zeros((self.nlps.dim_x, self.nlps.N))
-        fut_traj_value[:,0] = sim_initial_state
-        for timestep in range(1, self.nlps.N):
-            fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps.h * fut_traj_value[1::2, timestep-1]
+        # Create a random number generator instance
+        rng = np.random.default_rng()
+        instances = 100
 
-        # solve the NLP once
-        time_start = time.time()
-        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value)
-        time_execution_1 = time.time() - time_start
+        time_duration = np.zeros((instances, 1))
+
+        for instance in range(instances):
+            pe_init = np.deg2rad(rng.uniform(low = 10, high = 130))
+            pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+
+            se_init = np.deg2rad(rng.uniform(low = 10, high = 130))
+            se_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+
+            ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
+            ar_dot_init = np.deg2rad(0)
+            
+            sim_initial_state = np.array([pe_init, pe_dot_init, se_init, se_dot_init, ar_init, ar_dot_init])
+
+            # first, we estimate the future states given the initial one
+            fut_traj_value = np.zeros((self.nlps.dim_x, self.nlps.N+1))
+            fut_traj_value[:,0] = sim_initial_state
+            fut_traj_value[1::2, :] = sim_initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
+            for timestep in range(1, self.nlps.N+1):
+                fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps.h * fut_traj_value[1::2, timestep-1]
+
+            # solve the NLP once
+            time_start = time.time()
+            try:
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value[:, :-1])
+            except:
+                RuntimeError("Optimization not converged")
+
+                            # print the solution
+            x_opt = x_opt.full().reshape((6, 11), order='F')
+
+            fig = plt.figure()
+            ax = fig.add_subplot(311)
+            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[0,:]), c='blue', label='optimized')
+            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[0,:]), c='red', label='free')
+
+            ax = fig.add_subplot(312)
+            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[2,:]), c='blue')
+            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[2,:]), c='red')
+
+            ax = fig.add_subplot(313)
+            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[4,:]), c='blue')
+            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[4,:]), c='red')
+
+            fig.legend()
+
+            # title
+            fig.suptitle("x0 = [" + 
+                         str(np.round(np.rad2deg(pe_init), 1)) + ", " +
+                         str(np.round(np.rad2deg(pe_dot_init), 1)) +  ", " +
+                         str(np.round(np.rad2deg(se_init), 1)) +  ", " +
+                         str(np.round(np.rad2deg(se_dot_init), 1)) +  ", " +
+                         str(np.round(np.rad2deg(ar_init), 1)) +  ", " +
+                         str(np.round(np.rad2deg(ar_dot_init), 1)) +
+                           "]")
+
+            plt.show()
+            input()
+            
+            time_duration[instance] = time.time() - time_start
 
         
-        print ("execution with function: ", np.round(time_execution_1,3))
+        print ("avg time: ", np.round(time_duration.sum()/instances, 3))
+
+        aux = 0
 
 
 # ----------------------------------------------------------------------------------------------

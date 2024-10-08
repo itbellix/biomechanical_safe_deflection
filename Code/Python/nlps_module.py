@@ -644,7 +644,8 @@ class nlps_module():
             Pidot = ca.mtimes(Z, self.C)
 
             # match with ODE right-hand-side (only part of the state, to plan onto 2D strain maps)
-            self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta, theta_dot, psi, psi_dot (no constraint phi)
+            # self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta, theta_dot, psi, psi_dot (no constraint phi)
+            self.opti.subject_to(Pidot==self.h*ode)    # theta, theta_dot, psi, psi_dot, phi, phi_dot
 
             # save coordinates' accelerations (only for the first collocation point)
             Xddot_s.append(ode[1::2, 0])
@@ -662,6 +663,7 @@ class nlps_module():
         # bounding final velocities according to initial ones
         self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
         self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
+        self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
 
         # bounding final velocities
         # self.opti.subject_to((Xk[1])**2 < delta_vel)
@@ -690,7 +692,8 @@ class nlps_module():
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
         self.opti.set_value(future_trajectory_0, fut_traj_value)
-        self.opti.set_value(phi_dot_prm, 0)
+        self.opti.set_value(phi_dot_prm, fut_traj_value[-1, 0]) # velocity along AR coherent with future trajectory
+                                                                # (it is dependent on the initial state)
 
         # define the cost function to be minimized, and store its symbolic expression
         self.opti.minimize(J)
