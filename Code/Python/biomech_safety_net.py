@@ -435,7 +435,13 @@ class BS_net:
         converts it to end effector space and publishes the robot reference continuously. A flag enables/disables
         the computations/publishing to be performed, such that this happens only if the robot controller needs it.
         """
-        rate = self.ros_rate
+        # frequency of discretization of the future human movement is used
+        if self.interaction_mode == 3:
+            # if we are using the solution from the NLPS, then be coherent with the discretization
+            rate = rospy.Rate(1/self.nlps.h)
+        else:
+            # otherwise, run at the expected frequency
+            rate = rospy.Rate(self.ros_rate)
 
         while not rospy.is_shutdown():
             if self.flag_pub_trajectory:    # perform the computations only if needed
@@ -486,7 +492,7 @@ class BS_net:
         """
         with self.x_opt_lock:
             self.x_opt = self.state_values_current.reshape((9,1))[0:6]
-            self.u_opt = np.zeros((2,1))
+            self.u_opt = np.zeros((self.nlps.dim_u, 1))
 
         # set the default stiffness and damping for the controller
         self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
@@ -500,7 +506,7 @@ class BS_net:
         """
         with self.x_opt_lock:
             self.x_opt = self.x_opt[:,0].reshape((6,1))
-            self.u_opt = np.zeros((2,1))
+            self.u_opt = np.zeros((self.nlps.dim_u,1))
 
         # set the default stiffness and damping for the controller
         self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
@@ -906,12 +912,14 @@ class BS_net:
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
             self.ee_cart_damping_cmd = self.ee_cart_damping_low
 
-            self.x_opt = self.state_values_current[0:6].reshape((6,1))
-            print(".")
+            self.x_opt = initial_state.reshape((6,1))
         else:
-            # if not, then we need to adjust stuff and TODO have the NLP running
-            print("Future pose will be unsafe!")
+            # if not, then we have the NLP running to find an alternative path
+            x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory)
 
+            # note the order for reshape!
+            self.x_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]
+            
         # return the future trajectories
         return future_states
 
@@ -935,7 +943,6 @@ class BS_net:
 
         # initial state for the human model
         initial_state = self.state_values_current[0:6]
-
 
         # if we are considering strain in our formulation, add the parameters of the strainmap to the numerical input
         if self.nlps.num_gaussians>0:
@@ -1148,6 +1155,13 @@ class BS_net:
         ax.stairs(u_opt[1::3])
         ax.set_title("Torque SE")
 
+        traj_opt = x_opt.reshape((6, 11), order='F')[:, 1::]
+
+
+        fig = plt.figure()
+        ax = fig.add_subplot()
+        ax.scatter(traj_opt[0, :], traj_opt[2, :])
+
         plt.show()
 
         # simulated initial state for the human model
@@ -1161,7 +1175,7 @@ class BS_net:
 
         # solve the NLP once
         time_start = time.time()
-        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value, 0)
+        x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value)
         time_execution_1 = time.time() - time_start
 
         
@@ -1246,7 +1260,7 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        # bsn_module.debug_NLPS_formulation()
+        bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully

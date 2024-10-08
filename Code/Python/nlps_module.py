@@ -577,11 +577,11 @@ class nlps_module():
         J = 0
 
         # weights of the cost function
-        w_traj = 1
-        w_torque = 1
+        w_traj = 5
+        w_torque = 0.1
 
         # tolerances 
-        delta_vel = np.deg2rad(10)  # on the final velocity (in rad/s)
+        delta_vel = np.deg2rad(5)  # on the final velocity (in rad/s)
         delta_torque = 0.05         # on the final torque values (in N/m)
 
         # initialize empty list for the parameters used in the problem
@@ -599,8 +599,7 @@ class nlps_module():
         self.params_list.append(future_trajectory_0)
 
         # the current value of ar and ar_dot are also input parameters for the problem
-        phi_prm = self.opti.parameter(1)
-        self.params_list.append(phi_prm)
+        phi_prm = init_state[4]
         phi_dot_prm = self.opti.parameter(1)             # this is an internal parameter, not modifiable from outside
 
         # Collect all states/controls, and strain along the trajectory
@@ -617,10 +616,9 @@ class nlps_module():
             Us.append(Uk)
 
             # in the cost function, we weight:
-            # - the control effort difference with respect to the torques necessary to mantain the current state
+            # - the control effort difference with respect to the torques necessary to maintain the current state
             # - the deviation from the estimated future states
-            stationary_state_k = ca.vertcat(Xk[0], 0, Xk[2], 0, Xk[4], 0)
-            torque_stabil_k = self.sys_inv_dynamics(ca.vertcat(stationary_state_k, np.zeros((3,))))
+            torque_stabil_k = self.sys_inv_dynamics(ca.vertcat(future_trajectory_0[:, k], np.zeros((3,))))
             J = J \
                 + w_torque * ca.sumsqr(Uk - torque_stabil_k) \
                 + w_traj * ca.sumsqr(Xk - future_trajectory_0[:, k])
@@ -661,14 +659,19 @@ class nlps_module():
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
-        # bounding final velocities
+        # bounding final velocities according to initial ones
         self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
         self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
 
+        # bounding final velocities
+        # self.opti.subject_to((Xk[1])**2 < delta_vel)
+        # self.opti.subject_to((Xk[3])**2 < delta_vel)
+
         # bounding final torques 
         # (we need to resort to ID here, to find the torques that can stabilize the final state)
-        torque_stabil = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
-        self.opti.subject_to(self.opti.bounded(torque_stabil - delta_torque, Uk, torque_stabil + delta_torque))
+        # Note that the final velocity can also be non-zero (depending on the bounds imposed above)
+        torque_stabil_end = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
+        self.opti.subject_to(self.opti.bounded(torque_stabil_end - delta_torque, Uk, torque_stabil_end + delta_torque))
 
         # manipulate variables to retrieve their values after the NLP is solved
         self.Us = ca.vertcat(*Us)
@@ -680,13 +683,13 @@ class nlps_module():
         # (this is used to initialize the future_trajectory_0 parameter)
         fut_traj_value = np.zeros((self.dim_x, self.N))
         fut_traj_value[:,0] = self.x_0
+        fut_traj_value[1::2, :] = self.x_0[1::2][:, np.newaxis]    # velocities are assumed to be constant
         for timestep in range(1, self.N):
             fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.h * fut_traj_value[1::2, timestep-1]
 
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
         self.opti.set_value(future_trajectory_0, fut_traj_value)
-        self.opti.set_value(phi_prm, 0)
         self.opti.set_value(phi_dot_prm, 0)
 
         # define the cost function to be minimized, and store its symbolic expression
