@@ -1,4 +1,3 @@
-import opensim as osim
 import casadi as ca
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,7 +15,7 @@ class nlps_module():
     safely.
 
     """
-    def __init__(self, sys_forw_dynamics, sys_inv_dynamics = None):
+    def __init__(self, sys_forw_dynamics, sys_inv_dynamics = None, all_params_ellipses = None, num_params_ellipses = None):
         """"
         Initialization
         """
@@ -46,12 +45,11 @@ class nlps_module():
         # Define the differentiable inverse dynamics with a CasADi function
         self.sys_inv_dynamics = sys_inv_dynamics
 
-        # Strainmap parameters
-        self.num_gaussians = 0          # the number of 2D Gaussians used to approximate the current strainmap
-        self.num_params_gaussian = 6    # number of parameters that each Gaussian is defined of (for a 2D Gaussian, we need 6)
-        self.all_params_gaussians = []  # list containing the values of all the parameters defining all the Gaussians
-                                        # For each Gaussian, we have: amplitude, x0, y0, sigma_x, sigma_y, offset
-                                        # (if more Gaussians are present, the parameters of all of them are concatenated)
+        # Parameters for the unsafe zones
+        self.all_params_ellipses = all_params_ellipses  # array containing the values of all the params defining unsafe zones
+        self.num_params_ellipses = num_params_ellipses  # number of parameters defining each elliptical unsafe zone
+
+        self.num_unsafe_zones = int(len(all_params_ellipses)/num_params_ellipses)
         
         self.pe_boundaries = [-20, 160] # defines the interval of physiologically plausible values for the plane of elevation [deg]
         self.se_boundaries = [0, 144]   # as above, for the shoulder elevation [deg]
@@ -565,9 +563,9 @@ class nlps_module():
             RuntimeError("Unable to continue. The cost function have not been specified. \
                          Do so with setCostFunction()!")
             
-        if len(self.all_params_gaussians) == self.num_gaussians * 6:
-            if len(self.all_params_gaussians)==0:
-                print("No (complete) information about strainmaps have been included \nThe NLP will not consider them")
+        if len(self.all_params_ellipses) == self.num_unsafe_zones * self.num_params_ellipses:
+            if len(self.all_params_ellipses)==0:
+                print("No (complete) information about unsafe zones have been included \nThe NLP will not consider them")
         else:
             RuntimeError("Unable to continue. The specified strainmaps are not correct. \
                          Check if the parameters provided are complete wrt the number of Gaussians specified. \
@@ -601,11 +599,19 @@ class nlps_module():
         init_state = self.opti.parameter(self.dim_x)     # parametrize initial condition
         self.params_list.append(init_state)              # add the parameter to the list of parameters for the NLP
         self.opti.subject_to(Xk==init_state)
-        self.opti.set_initial(Xk, self.x_0)
 
         # parametrize the future human states (if no robot intervention is given)
         future_trajectory_0 = self.opti.parameter(self.dim_x, self.N)
         self.params_list.append(future_trajectory_0)
+
+        # parametrize the ellipses expressing unsafe zones
+        # if this information is present, define the strainmap to navigate onto
+        if self.num_unsafe_zones>0:
+            # for now, let's assume that there will always be exactly 1 unsafe zone
+            
+            # parameters of the 1st unsafe zone (note that they expect state variables in degrees for now)
+            p_uz_1 = self.opti.parameter(self.num_params_ellipses)    # the order is [x0, y0, a_squared, b_squared]
+            self.params_list.append(p_uz_1)
 
         # the current value of ar and ar_dot are also input parameters for the problem
         # TODO: remove when expanding to 3D (it will be more expensive computationally!)
@@ -674,6 +680,10 @@ class nlps_module():
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
+            if self.num_unsafe_zones>0:
+                    # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
+                    self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
+
         # bounding final velocities according to initial ones
         self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
         self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
@@ -700,6 +710,7 @@ class nlps_module():
         self.opti.set_value(future_trajectory_0, fut_traj_value)
         self.opti.set_value(phi_dot_prm, fut_traj_value[-1, 0]) # velocity along AR coherent with future trajectory
                                                                 # (it is dependent on the initial state)
+        self.opti.set_value(p_uz_1, self.all_params_ellipses)
 
         # define the cost function to be minimized, and store its symbolic expression
         self.opti.minimize(J)
@@ -770,10 +781,7 @@ class nlps_module():
             RuntimeError("Unable to continue. The NLP problem has not been formulated yet \
                          Do so with formulateNLP()!")
         
-        if self.num_gaussians>0:
-            symbolic_output_list = [self.Xs, self.Us, self.opti.lam_g, self.Js, self.strain_s, self.Xddot_s]  
-        else:
-            symbolic_output_list = [self.Xs, self.Us, self.opti.lam_g, self.Js, self.Xddot_s] 
+        symbolic_output_list = [self.Xs, self.Us, self.opti.lam_g, self.Js, self.Xddot_s] 
 
         # inputs to the function
         input_list = self.params_list.copy()       # the parameters that are needed when building the NLP

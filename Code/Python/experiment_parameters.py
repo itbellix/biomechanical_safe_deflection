@@ -68,7 +68,10 @@ if setup=='OldLab':
 # initial state (referred explicitly to the position of the patient's GH joint) 
 # Therapy will start in this position - used to build the NLP structure, and to command first position of the robot
 # x = [pe, pe_dot, se, se_dot, ar, ar_dot], but note that ar and ar_dot are not tracked
-x_0 = np.deg2rad(np.array([50, 0, 100, 0, 0, 0]))
+
+x_0 = np.deg2rad(np.array([70, 0, 100, 0, 0, 0]))
+# x_0 = np.deg2rad(np.array([55, -10, 100, 0, 0, 0]))
+# print("INITIAL POSITION IS UNSAFE!!!")
 
 # estimation of velocities in human coordinates
 speed_estimate = True

@@ -179,6 +179,10 @@ class BS_net:
         self.all_params_ellipses = all_params_ellipse
 
 
+    def getCurrentEllipseParams(self):
+        return self.all_params_ellipses, self.num_params_ellipses
+
+
     def setCurrentStrainMapParams(self, all_params_gaussians):
         """"
         This function is used to manually update the parameters fo the strainmap that is being considered, 
@@ -441,7 +445,7 @@ class BS_net:
             rate = rospy.Rate(1/self.nlps.h)
         else:
             # otherwise, run at the expected frequency
-            rate = rospy.Rate(self.ros_rate)
+            rate = self.ros_rate
 
         while not rospy.is_shutdown():
             if self.flag_pub_trajectory:    # perform the computations only if needed
@@ -868,7 +872,19 @@ class BS_net:
         self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
-        initial_state = self.state_values_current[0:6]
+        # initial_state = self.state_values_current[0:6]      # TODO: this is correct!! Now we are debugging!
+        rng = np.random.default_rng()
+
+        pe_init = np.deg2rad(rng.uniform(low = 65, high = 120))
+        pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+
+        se_init = np.deg2rad(rng.uniform(low = 10, high = 130))
+        se_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+
+        ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
+        ar_dot_init = np.deg2rad(0)
+        
+        initial_state = np.array([pe_init, pe_dot_init, se_init, se_dot_init, ar_init, ar_dot_init])
 
         # for the next N time-steps, predict the future states of the human model
         future_states = np.zeros((6, N+1))
@@ -915,10 +931,12 @@ class BS_net:
             self.x_opt = initial_state.reshape((6,1))
         else:
             # if not, then we have the NLP running to find an alternative path
-            x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory)
+            x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
 
             # note the order for reshape!
             self.x_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]
+
+            input()
             
         # return the future trajectories
         return future_states
@@ -1174,11 +1192,11 @@ class BS_net:
         time_duration = np.zeros((instances, 1))
 
         for instance in range(instances):
-            pe_init = np.deg2rad(rng.uniform(low = 10, high = 130))
-            pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+            pe_init = np.deg2rad(rng.uniform(low = 55, high = 60))
+            pe_dot_init = np.deg2rad(rng.uniform(low = -15, high = -5))
 
-            se_init = np.deg2rad(rng.uniform(low = 10, high = 130))
-            se_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+            se_init = np.deg2rad(rng.uniform(low = 99, high = 101))
+            se_dot_init = np.deg2rad(rng.uniform(low = -2, high = 2))
 
             ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
             ar_dot_init = np.deg2rad(0)
@@ -1195,12 +1213,13 @@ class BS_net:
             # solve the NLP once
             time_start = time.time()
             try:
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value[:, :-1])
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses)
             except:
                 RuntimeError("Optimization not converged")
 
-                            # print the solution
+            # print the solution
             x_opt = x_opt.full().reshape((6, 11), order='F')
+            # x_opt = x_opt.reshape((6, 11), order='F')
 
             fig = plt.figure()
             ax = fig.add_subplot(311)
@@ -1226,6 +1245,12 @@ class BS_net:
                          str(np.round(np.rad2deg(ar_init), 1)) +  ", " +
                          str(np.round(np.rad2deg(ar_dot_init), 1)) +
                            "]")
+
+            fig = plt.figure()
+            ax = fig.add_subplot()
+            ax.scatter(np.rad2deg(x_opt[0,:]), np.rad2deg(x_opt[2,:]), c = 'blue')
+            ax.scatter(np.rad2deg(x_opt[0,0]), np.rad2deg(x_opt[2,0]), c = 'cyan')
+            ax.scatter(np.rad2deg(fut_traj_value[0,:]), np.rad2deg(fut_traj_value[2,:]), c = 'red')
 
             plt.show()
             input()
@@ -1263,11 +1288,17 @@ if __name__ == '__main__':
         # initialize the biomechanics-safety net module
         bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=True)
 
+        params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
+        params_ellipse_test = np.array([20, 90, 35**2, 25**2])
+        
+        bsn_module.setCurrentEllipseParams(params_ellipse_test)
+        bsn_module.setCurrentStrainMapParams(params_strainmap_test)
+
         # initialize the underlying nonlinear programming problem
         opensimAD_ID = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_ID.casadi'))
         opensimAD_FD = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_FD.casadi'))
 
-        nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID)
+        nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
 
         nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
 
@@ -1304,6 +1335,13 @@ if __name__ == '__main__':
                 'ipopt.linear_solver':'ma27'
                 # 'ipopt.linear_solver':'mumps'
                 }
+
+        # solver = 'fatrop'
+        # opts = {
+        #         'post_expand': True
+        #         # 'structure_detection': 'auto'
+        #         }
+
         
         nlps_instance.setSolverOptions(solver, opts)
 
@@ -1325,12 +1363,6 @@ if __name__ == '__main__':
                                             position_gh_in_base = experimental_params['p_gh_in_base'], 
                                             base_R_sh = experimental_params['base_R_shoulder'], 
                                             dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])
-
-        params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
-        params_ellipse_test = np.array([20, 90, 35**2, 25**2])
-        
-        bsn_module.setCurrentEllipseParams(params_ellipse_test)
-        bsn_module.setCurrentStrainMapParams(params_strainmap_test)
 
         # Wait until the robot has reached the required position, and proceed only when the current shoulder pose is published
         bsn_module.waitForShoulderState()
