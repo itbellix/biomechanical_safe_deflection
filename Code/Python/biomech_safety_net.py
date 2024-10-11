@@ -873,19 +873,21 @@ class BS_net:
         self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
-        # initial_state = self.state_values_current[0:6]      # TODO: this is correct!! Now we are debugging!
-        rng = np.random.default_rng()
+        initial_state = self.state_values_current[0:6]
 
-        pe_init = np.deg2rad(rng.uniform(low = 65, high = 120))
-        pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+        # uncomment below for debugging
+        # rng = np.random.default_rng()
 
-        se_init = np.deg2rad(rng.uniform(low = 10, high = 130))
-        se_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+        # pe_init = np.deg2rad(rng.uniform(low = 65, high = 120))
+        # pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
 
-        ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
-        ar_dot_init = np.deg2rad(0)
+        # se_init = np.deg2rad(rng.uniform(low = 10, high = 130))
+        # se_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+
+        # ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
+        # ar_dot_init = np.deg2rad(0)
         
-        initial_state = np.array([pe_init, pe_dot_init, se_init, se_dot_init, ar_init, ar_dot_init])
+        # initial_state = np.array([pe_init, pe_dot_init, se_init, se_dot_init, ar_init, ar_dot_init])
 
         # for the next N time-steps, predict the future states of the human model
         future_states = np.zeros((6, N+1))
@@ -936,11 +938,18 @@ class BS_net:
 
             # note the order for reshape!
             self.x_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]
+            self.u_opt = None       # TODO: we are ignoring u_opt for now
 
-            input()
-            
-        # return the future trajectories
-        return future_states
+            # increase stiffness to actually track the optimal deflected trajectory
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+            self.ee_cart_damping_cmd = self.ee_cart_damping_default
+
+            # sleep for the duration of the optimized trajectory
+            time.sleep(self.nlps.T)
+
+            # decrease stiffness again so that subject can continue their movement
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+            self.ee_cart_damping_cmd = self.ee_cart_damping_low
 
 
     def predict_future_state_old(self):
@@ -1355,7 +1364,7 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        bsn_module.debug_NLPS_formulation()
+        # bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully

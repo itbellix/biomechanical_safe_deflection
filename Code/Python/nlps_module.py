@@ -699,7 +699,7 @@ class nlps_module():
         self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
 
         # bounding the final position to avoid unrealistic solutions that end up very far from initial state
-        self.opti.subject_to((Xk[0::2] - Xs[0][0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
+        self.opti.subject_to(ca.sumsqr(Xk[0::2] - Xs[0][0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
 
         # bounding final velocities
         # self.opti.subject_to((Xk[1])**2 < delta_vel)
