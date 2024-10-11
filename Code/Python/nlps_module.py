@@ -575,10 +575,10 @@ class nlps_module():
         J = 0
 
         # weights of the cost function
-        w_traj = 5
-        discount_factor_traj = 0.95
+        w_pos = 5
+        discount_factor_pos = 0.8
         w_torque = 0.5
-        w_vel = 1
+        w_vel = 2
         Ts = 1
         delta_e = 5 # delta ellipse in degrees
 
@@ -640,8 +640,8 @@ class nlps_module():
             # - the deviation from the estimated future states
             torque_stabil_k = self.sys_inv_dynamics(ca.vertcat(future_trajectory_0[:, k], np.zeros((3,))))
             J = J \
-                + w_torque * ca.sumsqr(Uk - torque_stabil_k) * discount_factor_traj**k \
-                + w_traj * ca.sumsqr(Xk - future_trajectory_0[:, k])
+                + w_torque * ca.sumsqr(Uk - torque_stabil_k) \
+                + w_pos * ca.sumsqr(Xk[0::2] - future_trajectory_0[0::2, k]) * discount_factor_pos**k
 
             # optimization variable (state) at collocation points
             Xc = self.opti.variable(self.dim_x, self.pol_order)
