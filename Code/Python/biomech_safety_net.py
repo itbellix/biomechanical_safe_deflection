@@ -873,15 +873,15 @@ class BS_net:
         self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
-        initial_state = self.state_values_current[0:6]
+        initial_state = self.state_values_current[0:6]        # TODO this is the correct thing
 
         # uncomment below for debugging
         # rng = np.random.default_rng()
 
-        # pe_init = np.deg2rad(rng.uniform(low = 65, high = 120))
-        # pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
+        # pe_init = np.deg2rad(rng.uniform(low = 55, high = 67))
+        # pe_dot_init = np.deg2rad(rng.uniform(low = -20, high = -5))
 
-        # se_init = np.deg2rad(rng.uniform(low = 10, high = 130))
+        # se_init = np.deg2rad(rng.uniform(low = 90, high = 110))
         # se_dot_init = np.deg2rad(rng.uniform(low = -20, high = 20))
 
         # ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
@@ -921,7 +921,7 @@ class BS_net:
         # In this way, we can also display it in real time on the strain map
         self.future_trajectory = future_states[:, 1:]   # the first column is discarded, since it corresponds to x_0
 
-        # let's sum up the flags, and see if any of the future states will be usafe
+        # let's sum up the flags, and see if any of the future states will be unsafe
         num_unsafe = int(self.in_zone_i.sum())
 
         if num_unsafe == 0:
@@ -937,15 +937,26 @@ class BS_net:
             x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
 
             # note the order for reshape!
-            self.x_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]
+            traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
+            self.x_opt = traj_opt
             self.u_opt = None       # TODO: we are ignoring u_opt for now
+
+
+            # fig = plt.figure()
+            # ax = fig.add_subplot()
+            # ax.scatter(np.rad2deg(traj_opt[0,:]), np.rad2deg(traj_opt[2,:]), c = 'blue', label = 'reference traj')
+            # ax.scatter(np.rad2deg(traj_opt[0,0]), np.rad2deg(traj_opt[2,0]), c = 'cyan')
+            # ax.scatter(np.rad2deg(self.future_trajectory[0,:]), np.rad2deg(self.future_trajectory[2,:]), c = 'red', label = 'future traj')
+            # ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.2))
+            # ax.legend()
+            # plt.show()
 
             # increase stiffness to actually track the optimal deflected trajectory
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
             # sleep for the duration of the optimized trajectory
-            time.sleep(self.nlps.T)
+            rospy.sleep(self.nlps.T)
 
             # decrease stiffness again so that subject can continue their movement
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
