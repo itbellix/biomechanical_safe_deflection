@@ -4,6 +4,7 @@ import numpy as np
 import rospy
 import time
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 import utilities_TO as utils_TO
 import utilities_casadi as utils_ca
 from scipy.spatial.transform import Rotation as R
@@ -1195,8 +1196,8 @@ class BS_net:
             pe_init = np.deg2rad(rng.uniform(low = 55, high = 60))
             pe_dot_init = np.deg2rad(rng.uniform(low = -15, high = -5))
 
-            se_init = np.deg2rad(rng.uniform(low = 99, high = 101))
-            se_dot_init = np.deg2rad(rng.uniform(low = -2, high = 2))
+            se_init = np.deg2rad(rng.uniform(low = 95, high = 105))
+            se_dot_init = np.deg2rad(rng.uniform(low = -15, high = 5))
 
             ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
             ar_dot_init = np.deg2rad(0)
@@ -1251,9 +1252,9 @@ class BS_net:
             ax.scatter(np.rad2deg(x_opt[0,:]), np.rad2deg(x_opt[2,:]), c = 'blue')
             ax.scatter(np.rad2deg(x_opt[0,0]), np.rad2deg(x_opt[2,0]), c = 'cyan')
             ax.scatter(np.rad2deg(fut_traj_value[0,:]), np.rad2deg(fut_traj_value[2,:]), c = 'red')
+            ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.1))
 
             plt.show()
-            input()
             
             time_duration[instance] = time.time() - time_start
 

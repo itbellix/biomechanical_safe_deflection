@@ -576,7 +576,11 @@ class nlps_module():
 
         # weights of the cost function
         w_traj = 5
-        w_torque = 0.1
+        discount_factor_traj = 0.95
+        w_torque = 0.5
+        w_vel = 1
+        Ts = 1
+        delta_e = 5 # delta ellipse in degrees
 
         # tolerances 
         delta_vel = np.deg2rad(5)  # on the final velocity (in rad/s)
@@ -636,7 +640,7 @@ class nlps_module():
             # - the deviation from the estimated future states
             torque_stabil_k = self.sys_inv_dynamics(ca.vertcat(future_trajectory_0[:, k], np.zeros((3,))))
             J = J \
-                + w_torque * ca.sumsqr(Uk - torque_stabil_k) \
+                + w_torque * ca.sumsqr(Uk - torque_stabil_k) * discount_factor_traj**k \
                 + w_traj * ca.sumsqr(Xk - future_trajectory_0[:, k])
 
             # optimization variable (state) at collocation points
@@ -677,17 +681,25 @@ class nlps_module():
             Xk = self.opti.variable(self.dim_x)
             Xs.append(Xk)
 
+            J = J + w_vel * ca.sumsqr(Xk[1::2] - init_state[1::2])
+            # J = J + w_vel * ca.sumsqr(Xk[1::2] - Xs[k][1::2])
+
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
-            if self.num_unsafe_zones>0:
-                    # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
-                    self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
+            if self.num_unsafe_zones>0 and k<self.N-1:
+                # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
+            elif self.num_unsafe_zones>0:
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
 
         # bounding final velocities according to initial ones
         self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
         self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
         self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
+
+        # bounding the final position to avoid unrealistic solutions that end up very far from initial state
+        self.opti.subject_to((Xk[0::2] - Xs[0][0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
 
         # bounding final velocities
         # self.opti.subject_to((Xk[1])**2 < delta_vel)
