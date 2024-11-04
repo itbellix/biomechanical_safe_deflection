@@ -844,9 +844,7 @@ class BS_net:
 
         # the overall NLP problem is formulated, meaning that its structure is determined based on the
         # previous inputs
-        self.nlps.formulateNLP_newVersion()
-        # self.nlps.formulateNLP_functionDynamics()
-        # self.nlps.formulateNLP_functionDynamics_IDintheloop()
+        self.nlps.formulateNLP_simpleMass()
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
         # both the function and the inputs it needs are initialized here
@@ -950,6 +948,88 @@ class BS_net:
             # ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.2))
             # ax.legend()
             # plt.show()
+
+            # increase stiffness to actually track the optimal deflected trajectory
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+            self.ee_cart_damping_cmd = self.ee_cart_damping_default
+
+            # sleep for the duration of the optimized trajectory
+            rospy.sleep(self.nlps.T)
+
+            # decrease stiffness again so that subject can continue their movement
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+
+
+    def predict_future_state_simple(self, N, T):
+        """
+        A variation with respect to predict_future_state_kinematic, where no optimization is run but only
+        geometric rules are applied to find some sort of deflection.
+        """
+        assert self.state_values_current is not None, "The current state of the human model is unknown"
+
+        # disable robot's reference trajectory publishing
+        self.flag_pub_trajectory = True
+
+        # retrieve number of (elliptical) unsafe zones present on current strain map
+        num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
+
+        self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
+
+        # initial state for the human model
+        initial_state = self.state_values_current[0:6]
+
+        # for the next N time-steps, predict the future states of the human model
+        future_states = np.zeros((6, N+1))
+        future_states[::2, 0] = initial_state[::2]      # initialize the first point of the state trajectory
+        future_states[1::2, :] = initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
+        
+        for timestep in range(1, N+1):
+            # retrieve estimation for future human state at current time step (assuming constant velocity)
+            future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
+
+            # check that the estimated point of the trajectory will be safe
+            # (for now, this is done in 2D for PE and SE only)
+            for i in range(num_ellipses):
+                a_squared = self.all_params_ellipses[self.num_params_ellipses*i+2]
+                b_squared = self.all_params_ellipses[self.num_params_ellipses*i+3]
+                if a_squared is not None and b_squared is not None:     # if the ellipse really exists
+                    x0 = self.all_params_ellipses[self.num_params_ellipses*i]
+                    y0 = self.all_params_ellipses[self.num_params_ellipses*i+1]
+
+                    # note that we use normalized variables here (the ellipses are defined in degrees)
+                    self.in_zone_i[timestep, i] = int(((np.rad2deg(future_states[0, timestep])-x0)**2/a_squared + (np.rad2deg(future_states[2, timestep])-y0)**2/b_squared) < 1)
+
+                    # update strain visualization information for plotting the ellipse
+                    # this needs to be x0, y0, 2a, 2b
+                    params_ellipse_viz = np.array([x0, y0, 2*np.sqrt(a_squared), 2*np.sqrt(b_squared)]).reshape((1, self.num_params_ellipses))
+
+                    # update the ellipses for plotting
+                    self.strain_visualizer.update_ellipse_params(params_ellipse_viz, force = True)
+
+        # the trajectory is saved as a parameter in the BSN module.
+        # In this way, we can also display it in real time on the strain map
+        self.future_trajectory = future_states[:, 1:]   # the first column is discarded, since it corresponds to x_0
+
+        # let's sum up the flags, and see if any of the future states will be unsafe
+        num_unsafe = int(self.in_zone_i.sum())
+
+        if num_unsafe == 0:
+            # if there is no future state which is unsafe, the current position is tracked
+            # choose Cartesian stiffness and damping for the robot's impedance controller
+            # we set low values so that subject can move (almost) freely
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+
+            self.x_opt = initial_state.reshape((6,1))
+        else:
+            # if not, then we run a simple optimization problem to find the optimal trajectory to avoid the unsafe areas.
+            x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
+
+            # note the order for reshape!
+            traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
+            self.x_opt = traj_opt
+            self.u_opt = None       # TODO: we are ignoring u_opt for now
 
             # increase stiffness to actually track the optimal deflected trajectory
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
@@ -1222,7 +1302,11 @@ class BS_net:
             ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
             ar_dot_init = np.deg2rad(0)
             
+            # TODO: use this for robustness test with many initial conditions
             sim_initial_state = np.array([pe_init, pe_dot_init, se_init, se_dot_init, ar_init, ar_dot_init])
+
+            # TODO: use this for benchmarking and repeatable trials
+            # sim_initial_state =self.nlps.x_0
 
             # first, we estimate the future states given the initial one
             fut_traj_value = np.zeros((self.nlps.dim_x, self.nlps.N+1))
@@ -1346,22 +1430,31 @@ if __name__ == '__main__':
         # choose solver and set its options
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
 
-        opts = {'ipopt.print_level': 5,         # options for the solver (check CasADi/solver docs for changing these)
+        opts = {
+                # 'ipopt.print_level': 5,         # options for the solver (check CasADi/solver docs for changing these)
+                # 'print_time': 0,
                 # 'ipopt.mu_strategy': 'adaptive',
                 # 'ipopt.nlp_scaling_method': 'gradient-based',
-                'print_time': 0,
                 'ipopt.tol': 1e-3,
                 'error_on_fail':1,              # to guarantee transparency if solver fails
                 'expand':1,                     # to leverage analytical expression of the Hessian
                 'ipopt.linear_solver':'ma27'
                 # 'ipopt.linear_solver':'mumps'
+                # "jit": True, 
+                # "compiler": "shell", 
+                # "jit_options": 
+                #     {
+                #         "flags": ["-O3"], 
+                #         "verbose": True
+                #     } 
                 }
 
         # solver = 'fatrop'
-        # opts = {
-        #         'post_expand': True
-        #         # 'structure_detection': 'auto'
-        #         }
+        # opts = {}
+        # opts["expand"] = True
+        # opts["fatrop"] = {"mu_init": 0.1}
+        # opts["structure_detection"] = "auto"
+        # opts["debug"] = True
 
         
         nlps_instance.setSolverOptions(solver, opts)
@@ -1421,6 +1514,9 @@ if __name__ == '__main__':
 
                 elif bsn_module.interaction_mode == 3:
                     bsn_module.predict_future_state_kinematic(N = 10, T = 1)
+
+                elif bsn_module.interaction_mode == 4:
+                    bsn_module.predict_future_state_simple(N = 10, T = 1)
                     
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.

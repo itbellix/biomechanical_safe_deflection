@@ -575,10 +575,11 @@ class nlps_module():
         J = 0
 
         # weights of the cost function
-        w_pos = 5
+        w_pos = 1
         discount_factor_pos = 0.8
-        w_torque = 0.5
-        w_vel = 2
+        w_torque = 1
+        w_vel = 1
+        w_acc = 1
         Ts = 1
         delta_e = 5 # delta ellipse in degrees
 
@@ -649,7 +650,7 @@ class nlps_module():
 
             # we need to create a proper input to the casadi function
             # we want to evaluate x_dot at every point in the collocation mesh
-            input_sys_forw_dynamics = ca.vertcat(Xc[0:4, :],                     # theta, theta dot, psi, psi_dot at collocation points
+            input_sys_forw_dynamics = ca.vertcat(Xc[0:4, :],                # theta, theta dot, psi, psi_dot at collocation points
                                             ca.repmat(phi_prm, 1, 3),       # phi at collocation points
                                             ca.repmat(phi_dot_prm, 1, 3),   # phi_dot at collocation points
                                             ca.repmat(Uk, 1, 3))            # controls at collocation points (constant)
@@ -668,11 +669,14 @@ class nlps_module():
             Pidot = ca.mtimes(Z, self.C)
 
             # match with ODE right-hand-side (only part of the state, to plan onto 2D strain maps)
-            # self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta, theta_dot, psi, psi_dot (no constraint phi)
-            self.opti.subject_to(Pidot==self.h*ode)    # theta, theta_dot, psi, psi_dot, phi, phi_dot
+            # self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta_dot, theta_ddot, psi_dot, psi_ddot (no constraint phi)
+            self.opti.subject_to(Pidot==self.h*ode)    # theta_dot, theta_ddot, psi_dot, psi_ddot, phi_dot, phi_ddot
 
             # save coordinates' accelerations (only for the first collocation point)
             Xddot_s.append(ode[1::2, 0])
+
+            # consider acceleration of each collocation point in the cost function
+            J = J + w_acc * ca.sumsqr(ode[1::2, :])
 
             # state at the end of collocation interval
             Xk_end = ca.mtimes(Z, self.D)
@@ -693,23 +697,23 @@ class nlps_module():
             elif self.num_unsafe_zones>0:
                 self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
 
-        # bounding final velocities according to initial ones
-        self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
-        self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
-        self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
+        # # bounding final velocities according to initial ones
+        # self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
+        # self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
+        # self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
 
-        # bounding the final position to avoid unrealistic solutions that end up very far from initial state
-        self.opti.subject_to(ca.sumsqr(Xk[0::2] - Xs[0][0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
+        # # bounding the final position to avoid unrealistic solutions that end up very far from initial state
+        # self.opti.subject_to(ca.sumsqr(Xk[0::2] - init_state[0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
 
-        # bounding final velocities
-        # self.opti.subject_to((Xk[1])**2 < delta_vel)
-        # self.opti.subject_to((Xk[3])**2 < delta_vel)
+        # # bounding final velocities
+        # # self.opti.subject_to((Xk[1])**2 < delta_vel)
+        # # self.opti.subject_to((Xk[3])**2 < delta_vel)
 
-        # bounding final torques 
-        # (we need to resort to ID here, to find the torques that can stabilize the final state)
-        # Note that the final velocity can also be non-zero (depending on the bounds imposed above)
-        torque_stabil_end = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
-        self.opti.subject_to(self.opti.bounded(torque_stabil_end - delta_torque, Uk, torque_stabil_end + delta_torque))
+        # # bounding final torques 
+        # # (we need to resort to ID here, to find the torques that can stabilize the final state)
+        # # Note that the final velocity can also be non-zero (depending on the bounds imposed above)
+        # torque_stabil_end = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
+        # self.opti.subject_to(self.opti.bounded(torque_stabil_end - delta_torque, Uk, torque_stabil_end + delta_torque))
 
         # manipulate variables to retrieve their values after the NLP is solved
         self.Us = ca.vertcat(*Us)
@@ -722,6 +726,171 @@ class nlps_module():
         self.opti.set_value(future_trajectory_0, fut_traj_value)
         self.opti.set_value(phi_dot_prm, fut_traj_value[-1, 0]) # velocity along AR coherent with future trajectory
                                                                 # (it is dependent on the initial state)
+        self.opti.set_value(p_uz_1, self.all_params_ellipses)
+
+        # define the cost function to be minimized, and store its symbolic expression
+        self.opti.minimize(J)
+        self.Js = J
+
+        # set flag indicating process was successful
+        self.nlp_is_formulated = True
+
+
+    def formulateNLP_simpleMass(self):
+        """
+        New NLP relying on minimal deviations from given trajectories, assuming point-mass system.
+        We start by implementing a multiple shooting strategy.
+        """
+        
+        if len(self.all_params_ellipses) == self.num_unsafe_zones * self.num_params_ellipses:
+            if len(self.all_params_ellipses)==0:
+                print("No (complete) information about unsafe zones have been included \nThe NLP will not consider them")
+        else:
+            RuntimeError("Unable to continue. The specified strainmaps are not correct. \
+                         Check if the parameters provided are complete wrt the number of Gaussians specified. \
+                         Note: we assume that 6 parameters per (2D) Gaussian are given")
+
+        # initialize the cost function value
+        J = 0
+
+        # weights of the cost function
+        w_pos = 1
+        discount_factor_pos = 0.8
+        w_torque = 1
+        w_vel = 1
+        w_acc = 1
+        Ts = 1
+        delta_e = 5 # delta ellipse in degrees
+
+        # tolerances 
+        delta_vel = np.deg2rad(5)  # on the final velocity (in rad/s)
+        delta_torque = 0.05         # on the final torque values (in N/m)
+
+        # find the most likely evolution of the human state in the next N time steps
+        # (this is used to initialize the future_trajectory_0 parameter)
+        fut_traj_value = np.zeros((self.dim_x, self.N))
+        fut_traj_value[:,0] = self.x_0
+        fut_traj_value[1::2, :] = self.x_0[1::2][:, np.newaxis]    # velocities are assumed to be constant
+        for timestep in range(1, self.N):
+            fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.h * fut_traj_value[1::2, timestep-1]
+
+        # initialize empty list for the parameters used in the problem
+        # the parameters collected here can be changed at runtime   
+        self.params_list = []
+
+        #  "Lift" initial conditions
+        Xk = self.opti.variable(self.dim_x)
+        init_state = self.opti.parameter(self.dim_x)     # parametrize initial condition
+        self.params_list.append(init_state)              # add the parameter to the list of parameters for the NLP
+        self.opti.subject_to(Xk==init_state)
+
+        # parametrize the future human states (if no robot intervention is given)
+        future_trajectory_0 = self.opti.parameter(self.dim_x, self.N)
+        self.params_list.append(future_trajectory_0)
+
+        # parametrize the ellipses expressing unsafe zones
+        # if this information is present, define the strainmap to navigate onto
+        if self.num_unsafe_zones>0:
+            # for now, let's assume that there will always be exactly 1 unsafe zone
+            
+            # parameters of the 1st unsafe zone (note that they expect state variables in degrees for now)
+            p_uz_1 = self.opti.parameter(self.num_params_ellipses)    # the order is [x0, y0, a_squared, b_squared]
+            self.params_list.append(p_uz_1)
+
+        # let's define the system dynamics
+        # the state will be that of a 3D point mass x = [pe, pe_dot, se, se_dot, ar, ar_dot]
+        # this is consistent in terms of dimension and ordering to the rest of the code
+        pe = ca.MX.sym('pe')
+        pe_dot = ca.MX.sym('pe_dot')
+        se = ca.MX.sym('se')
+        se_dot = ca.MX.sym('se_dot')
+        ar = ca.MX.sym('ar')
+        ar_dot = ca.MX.sym('ar_dot')
+        x = ca.vertcat(pe, pe_dot, se, se_dot, ar, ar_dot)
+        u = ca.MX.sym('u', 3)
+
+        m = 1   # unit mass
+
+        x_dot = ca.vertcat(pe_dot, 1/m*u[0], se_dot, 1/m*u[1], ar_dot, 1/m*u[2])
+
+        L = 0
+
+        # Fixed step Runge-Kutta 4 integrator
+        M = 4 # RK4 steps per interval
+        DT = self.T/self.N/M
+        f = ca.Function('f', [x, u], [x_dot, L])
+        X0 = ca.MX.sym('X0', 6)
+        U = ca.MX.sym('U', 3)
+        X = X0
+        Q = 0
+        for j in range(M):
+            k1, k1_q = f(X, U)
+            k2, k2_q = f(X + DT/2 * k1, U)
+            k3, k3_q = f(X + DT/2 * k2, U)
+            k4, k4_q = f(X + DT * k3, U)
+            X=X+DT/6*(k1 +2*k2 +2*k3 +k4)
+            Q = Q + DT/6*(k1_q + 2*k2_q + 2*k3_q + k4_q)
+        integrator = ca.Function('integrator', [X0, U], [X, Q], ['x0','p'], ['xf','qf'])
+
+        # Collect all states/controls, and strain along the trajectory
+        Xs = [Xk]
+        Xs_collocation = []
+        Us = []
+        Xddot_s = []
+        strain_s = []
+
+        # formulate the NLP
+        for k in range(self.N):
+            # New NLP variable for the control
+            Uk = self.opti.variable(self.dim_u)
+            Us.append(Uk)
+
+            # in the cost function, we weight:
+            # - the control effort
+            # - the deviation from the estimated future states
+            J = J + w_torque * ca.sumsqr(Uk) \
+                + w_pos * ca.sumsqr(Xk[0::2] - future_trajectory_0[0::2, k]) * discount_factor_pos**k
+
+            # Integrate till the end of the interval
+            Fk = integrator(x0 = Xk, p = Uk)
+            Xk_end = Fk['xf']
+            J = J + Fk['qf']
+
+            # new decision variable for state at the end of interval
+            Xk = self.opti.variable(self.dim_x)
+            Xs.append(Xk)
+
+            J = J + w_vel * ca.sumsqr(Xk[1::2] - init_state[1::2])
+
+            # continuity constraint
+            self.opti.subject_to(Xk_end==Xk)
+
+            if self.num_unsafe_zones>0 and k<self.N-1:
+                # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
+            elif self.num_unsafe_zones>0:
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
+
+        # bounding final velocities according to initial ones
+        self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
+        self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
+        self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
+
+        # bounding the final position to avoid unrealistic solutions that end up very far from initial state
+        self.opti.subject_to(ca.sumsqr(Xk[0::2] - init_state[0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
+
+        # bounding final torques 
+        self.opti.subject_to(self.opti.bounded(-delta_torque, Uk, delta_torque))
+
+        # manipulate variables to retrieve their values after the NLP is solved
+        self.Us = ca.vertcat(*Us)
+        self.Xs = ca.vertcat(*Xs)
+        self.Xs_collocation = ca.vertcat(*Xs_collocation)
+        self.Xddot_s = ca.vertcat(*Xddot_s)
+
+        # set the values of the parameters (these will be changed at runtime)
+        self.opti.set_value(init_state, self.x_0)
+        self.opti.set_value(future_trajectory_0, fut_traj_value)
         self.opti.set_value(p_uz_1, self.all_params_ellipses)
 
         # define the cost function to be minimized, and store its symbolic expression
