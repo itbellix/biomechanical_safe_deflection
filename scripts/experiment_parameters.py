@@ -109,6 +109,19 @@ experimental_params['L_tot'] = l_arm + l_brace
 experimental_params['d_gh_ee_in_shoulder'] = dist_shoulder_ee
 experimental_params['elb_R_ee'] = elb_R_ee
 experimental_params['estimate_gh_position'] = False
+experimental_params['loop_frequency'] = loop_frequency
+experimental_params['ar_offset'] = ar_offset
+experimental_params['x_0'] = x_0
+experimental_params['speed_estimate'] = speed_estimate
+experimental_params['ns_elb_stiffness'] = ns_elb_stiffness
+experimental_params['ns_elb_damping'] = ns_elb_damping
+experimental_params['ee_stiffness'] = ee_stiffness
+experimental_params['ee_damping'] = ee_damping
+experimental_params['ns_elb_stiffness_sim'] = ns_elb_stiffness_sim
+experimental_params['ns_elb_damping_sim'] = ns_elb_damping_sim
+experimental_params['ee_stiffness_sim'] = ee_stiffness_sim
+experimental_params['ee_damping_sim'] = ee_damping_sim
+
 # -------------------------------------------------------------------------------
 # names of the ROS topics on which the shared communication between biomechanical-based optimization and robot control will happen
 shared_ros_topics = {}

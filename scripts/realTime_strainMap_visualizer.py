@@ -217,14 +217,14 @@ class RealTimeStrainMapVisualizer:
 
         # if given, display the reference trajectory scattering its points
         if reference_current is not None:
-            traj_point_radius = 3
+            traj_point_radius = 1
             
             for index in range(np.shape(reference_current)[1]):
                 pygame.draw.circle(self.screen, (0, 0, 255), self.remapPointOnScreen(np.rad2deg(reference_current[:,index])), traj_point_radius)
 
         # if given, display the future states of the human model
         if future_trajectory is not None:
-            traj_point_radius = 3
+            traj_point_radius = 1
             
             for index in range(np.shape(future_trajectory)[1]):
                 pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(future_trajectory[:,index])), traj_point_radius)

@@ -5,11 +5,8 @@ import rospy
 import time
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-import utilities_TO as utils_TO
-import utilities_casadi as utils_ca
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize_scalar
-import pickle
 from std_msgs.msg import Float64MultiArray, Bool
 import threading
 
@@ -228,7 +225,7 @@ class BS_net:
         ar = shoulder_pose_ref[2]
 
         # define the required rotations
-        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar-ar_offset)
+        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar - experimental_params['ar_offset'])
 
         base_R_ee = base_R_elb * R.from_euler('x', -np.pi/2)
 
@@ -243,7 +240,7 @@ class BS_net:
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
         if torque_ref is not None:
-            k_z = ee_stiffness[2]
+            k_z = experimental_params['ee_stiffness'][2]
             se_estimated = self.state_values_current[2]
             torque_se = torque_ref[1]
             z_current = self.current_ee_pose[2]
@@ -1380,7 +1377,7 @@ if __name__ == '__main__':
 
         # define the required paths
         code_path = os.path.dirname(os.path.realpath(__file__))     # getting path to where this script resides
-        path_to_repo = os.path.join(code_path, '..', '..')          # getting path to the repository
+        path_to_repo = os.path.join(code_path, '..')          # getting path to the repository
         path_to_model = os.path.join(path_to_repo, 'Musculoskeletal Models')    # getting path to the OpenSim models
 
         ## PARAMETERS -----------------------------------------------------------------------------------------------
@@ -1391,7 +1388,7 @@ if __name__ == '__main__':
         debug_mode = True
 
         # initialize the biomechanics-safety net module
-        bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=True)
+        bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=experimental_params['speed_estimate'])
 
         params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
         params_ellipse_test = np.array([20, 90, 35**2, 25**2])
@@ -1459,7 +1456,7 @@ if __name__ == '__main__':
         
         nlps_instance.setSolverOptions(solver, opts)
 
-        nlps_instance.setInitialState(x_0 = x_0)
+        nlps_instance.setInitialState(x_0 = experimental_params['x_0'])
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
         bsn_module.assign_nlps(nlps_instance)
@@ -1468,12 +1465,12 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        # bsn_module.debug_NLPS_formulation()
+        bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
         # received by the RobotControlModule
-        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = x_0[0::2], 
+        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = experimental_params['x_0'][0::2], 
                                             position_gh_in_base = experimental_params['p_gh_in_base'], 
                                             base_R_sh = experimental_params['base_R_shoulder'], 
                                             dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])

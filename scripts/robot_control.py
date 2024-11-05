@@ -185,7 +185,7 @@ class RobotControlModule:
 
             # once the previous angles have been retrieved, use the orientation of the EE to find ar
             # (we assume that the EE orientation points towards the center of the shoulder for this)
-            ar = np.arctan2(-sh_R_elb[1,0], sh_R_elb[1,2]/np.sin(se)) + ar_offset
+            ar = np.arctan2(-sh_R_elb[1,0], sh_R_elb[1,2]/np.sin(se)) + experimental_params['ar_offset']
 
             # 2. we estimate the coordinate velocities (here the robot and the human are interacting as a geared mechanism)
             # 2.1 estimate the velocity along the plane of elevation
@@ -570,7 +570,7 @@ if __name__ == "__main__":
 
         # initialize ros node and set desired rate (imported above as a parameter)
         rospy.init_node("robot_control_module")
-        ros_rate = rospy.Rate(loop_frequency)
+        ros_rate = rospy.Rate(experimental_params['loop_frequency'])
 
         # flag that determines if the robotic therapy should keep going
         ongoing_therapy = True
@@ -659,11 +659,11 @@ if __name__ == "__main__":
                         control_module.reference_tracker.flag = True
                         control_module.reference_tracker.joints = [3]
                         if simulation == True:
-                            control_module.reference_tracker.stiffness = ns_elb_stiffness_sim
-                            control_module.reference_tracker.damping = ns_elb_damping_sim
+                            control_module.reference_tracker.stiffness = experimental_params['ns_elb_stiffness_sim']
+                            control_module.reference_tracker.damping = experimental_params['ns_elb_damping_sim']
                         else:
-                            control_module.reference_tracker.stiffness = ns_elb_stiffness
-                            control_module.reference_tracker.damping = ns_elb_damping
+                            control_module.reference_tracker.stiffness = experimental_params['ns_elb_stiffness']
+                            control_module.reference_tracker.damping = experimental_params['ns_elb_damping']
                         
                         control_module.client.send_goal(control_module.reference_tracker)
                         result = control_module.client.wait_for_result()
@@ -696,11 +696,11 @@ if __name__ == "__main__":
                         # switch to pure cartesian mode
                         # further increase stiffness
                         if simulation == True:
-                            stiffness_higher = ee_stiffness_sim
-                            damping_higher = ee_damping_sim
+                            stiffness_higher = experimental_params['ee_stiffness_sim']
+                            damping_higher = experimental_params['ee_damping_sim']
                         else:
-                            stiffness_higher = ee_stiffness
-                            damping_higher = ee_damping 
+                            stiffness_higher = experimental_params['ee_stiffness']
+                            damping_higher = experimental_params['ee_damping']
 
                         control_module.reference_tracker.mode = 'ee_cartesian'
                         control_module.reference_tracker.reference = []
