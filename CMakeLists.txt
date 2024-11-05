@@ -169,9 +169,9 @@ include_directories(
 catkin_install_python(PROGRAMS
   scripts/biomech_safety_net.py
   scripts/robot_control.py
-  scripts/experiment_parameters.py
   scripts/nlps_module.py
   scripts/realTime_strainMap_visualizer.py
+  scripts/param_updater.py
 
   # add here other Python scripts
 

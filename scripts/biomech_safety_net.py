@@ -23,7 +23,7 @@ class BS_net:
     """
     Biomechanics Safety Net module.
     """
-    def __init__(self, shared_ros_topics, debug_mode, rate=200, simulation = 'true', speed_estimate:Bool=False):
+    def __init__(self, debug_mode, rate=200, simulation = 'true', speed_estimate:Bool=False):
         """"
         Initialization of the module, given inputs and default values
         """
@@ -140,22 +140,22 @@ class BS_net:
         self.ros_rate = rospy.Rate(rate)
 
         # Create publisher for the cartesian trajectory for the KUKA end-effector
-        self.topic_opt_traj = shared_ros_topics['cartesian_ref_ee']
+        self.topic_opt_traj = rospy.get_param('/rostopic/cartesian_ref_ee')
         self.pub_trajectory = rospy.Publisher(self.topic_opt_traj, Float64MultiArray, queue_size=1)
         self.flag_pub_trajectory = False    # flag to check if trajectory is being published (default: False = no publishing)
         
         # Create the publisher for the unused z_reference
         # It will publish the uncompensated z reference when running a real experiment,
         # and the gravity compensated reference when running in simulation.
-        self.topic_z_level = shared_ros_topics['z_level']
+        self.topic_z_level = rospy.get_param('/rostopic/z_level')
         self.pub_z_level = rospy.Publisher(self.topic_z_level, Float64MultiArray, queue_size=1)
 
         # Create the publisher dedicated to stream the optimal trajectories and controls
-        self.topic_optimization_output = shared_ros_topics['optimization_output']
+        self.topic_optimization_output = rospy.get_param('/rostopic/optimization_output')
         self.pub_optimization_output = rospy.Publisher(self.topic_optimization_output, Float64MultiArray, queue_size=1)
 
         # Create a subscriber to listen to the current value of the shoulder pose
-        self.topic_shoulder_pose = shared_ros_topics['estimated_shoulder_pose']
+        self.topic_shoulder_pose = rospy.get_param('/rostopic/estimated_shoulder_pose')
         self.sub_curr_shoulder_pose = rospy.Subscriber(self.topic_shoulder_pose, Float64MultiArray, self._shoulder_pose_cb, queue_size=1)
         self.flag_receiving_shoulder_pose = False       # flag indicating whether the shoulder pose is being received
 
@@ -166,7 +166,7 @@ class BS_net:
 
         # create a subscriber to catch when the trajectory optimization should be running
         self.flag_run = False
-        self.sub_run= rospy.Subscriber(shared_ros_topics['request_reference'], Bool, self._flag_run_cb, queue_size=1)
+        self.sub_run= rospy.Subscriber(rospy.get_param('/rostopic/request_reference'), Bool, self._flag_run_cb, queue_size=1)
 
         # create a thread to catch the input from teh user, who will select the robot's interaction mode
         self.interaction_mode = 0
@@ -225,27 +225,27 @@ class BS_net:
         ar = shoulder_pose_ref[2]
 
         # define the required rotations
-        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar - experimental_params['ar_offset'])
+        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar - rospy.get_param('ar_offset'))
 
         base_R_ee = base_R_elb * R.from_euler('x', -np.pi/2)
 
         euler_angles_cmd = base_R_ee.as_euler('xyz') # store also equivalent Euler angles
 
         # find position for the end-effector origin
-        if experimental_params['estimate_gh_position'] and self.flag_receiving_shoulder_pose:
+        if rospy.get_param('/pu/estimate_gh_position') and self.flag_receiving_shoulder_pose:
             ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + self.position_gh_in_base
         else:
-            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + experimental_params['p_gh_in_base']
+            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + rospy.get_param('/pu/p_gh_in_base')
 
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
         if torque_ref is not None:
-            k_z = experimental_params['ee_stiffness'][2]
+            k_z = rospy.get_param('/pu/ee_stiffness')[2]
             se_estimated = self.state_values_current[2]
             torque_se = torque_ref[1]
             z_current = self.current_ee_pose[2]
 
-            new_z_ref = z_current + torque_se/(k_z * experimental_params['L_tot'] * np.sin(se_estimated))
+            new_z_ref = z_current + torque_se/(k_z * rospy.get_param('/pu/L_tot') * np.sin(se_estimated))
             
             # append new z reference (in this way, we can filter both the new and the old)
             ref_cart_point = np.hstack((ref_cart_point, new_z_ref))
@@ -347,7 +347,7 @@ class BS_net:
         self.x_opt = shoulder_state
 
         # fix the position of the center of the shoulder/glenohumeral joint
-        self.position_gh_in_base = experimental_params['p_gh_in_base']
+        self.position_gh_in_base = rospy.get_param('/pu/p_gh_in_base')
 
         # perform extra things if this is the first time we execute this
         if not self.flag_pub_trajectory:
@@ -372,7 +372,7 @@ class BS_net:
         self.state_values_current = np.array(data.data[0:9])        # update current pose
         # this is pe, pe_dot, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
         
-        if experimental_params['estimate_gh_position']:
+        if rospy.get_param('/pu/estimate_gh_position'):
             # retrieve the current pose of the shoulder/glenohumeral center in the base frame
             self.position_gh_in_base = np.array(data.data[9:12])
 
@@ -1381,14 +1381,11 @@ if __name__ == '__main__':
         path_to_model = os.path.join(path_to_repo, 'Musculoskeletal Models')    # getting path to the OpenSim models
 
         ## PARAMETERS -----------------------------------------------------------------------------------------------
-        # import the parameters for the experiment as defined in experiment_parameters.py
-        from experiment_parameters import *     # this contains the experimental_params and the shared_ros_topics
-
         # are we debugging or not?
         debug_mode = True
 
         # initialize the biomechanics-safety net module
-        bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=experimental_params['speed_estimate'])
+        bsn_module = BS_net(debug_mode, rate=200, simulation = simulation, speed_estimate=rospy.get_param('/pu/speed_estimate'))
 
         params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
         params_ellipse_test = np.array([20, 90, 35**2, 25**2])
@@ -1456,7 +1453,7 @@ if __name__ == '__main__':
         
         nlps_instance.setSolverOptions(solver, opts)
 
-        nlps_instance.setInitialState(x_0 = experimental_params['x_0'])
+        nlps_instance.setInitialState(x_0 = rospy.get_param('/pu/x_0'))
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
         bsn_module.assign_nlps(nlps_instance)
@@ -1470,10 +1467,10 @@ if __name__ == '__main__':
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
         # received by the RobotControlModule
-        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = experimental_params['x_0'][0::2], 
-                                            position_gh_in_base = experimental_params['p_gh_in_base'], 
-                                            base_R_sh = experimental_params['base_R_shoulder'], 
-                                            dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])
+        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = rospy.get_param('/pu/x_0')[0::2], 
+                                            position_gh_in_base = rospy.get_param('/pu/p_gh_in_base'), 
+                                            base_R_sh = rospy.get_param('/pu/base_R_shoulder'), 
+                                            dist_gh_elbow = rospy.get_param('/pu/d_gh_ee_in_shoulder'))
 
         # Wait until the robot has reached the required position, and proceed only when the current shoulder pose is published
         bsn_module.waitForShoulderState()

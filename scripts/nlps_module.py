@@ -2,9 +2,6 @@ import casadi as ca
 import numpy as np
 import matplotlib.pyplot as plt
 
-from experiment_parameters import *     # this contains the experimental_params and the shared_ros_topics
-
-
 class nlps_module():
     """
     Class defining the nonlinear programming (NLP) problem defined to navigate the Strain maps.
