@@ -27,7 +27,8 @@ def callback(config, level):
     the modifications are accessible to other nodes too. This is done specifically
     with the return command. Before, we can print something to make the user happy!
     """
-    rospy.loginfo("""l_arm: {l_arm}, stiff_mult: {stiffness_multiplier}""".format(**config))
+    rospy.loginfo("""l_arm: {l_arm}, stiff_mult: {stiffness_multiplier},
+                  p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}]""".format(**config))
     return config
 
 if __name__ == "__main__":
@@ -133,7 +134,9 @@ if __name__ == "__main__":
 
     # now let's set all of the relevant parameters
     # the problem is that we need to use very simple data structures here...
-    rospy.set_param('/pu/p_gh_in_base', position_gh_in_base.tolist())
+    rospy.set_param('/pu/p_gh_in_base_x', float(position_gh_in_base[0]))
+    rospy.set_param('/pu/p_gh_in_base_y', float(position_gh_in_base[1]))
+    rospy.set_param('/pu/p_gh_in_base_z', float(position_gh_in_base[2]))
     rospy.set_param('/pu/p_gh_in_ee', position_gh_in_ee.tolist())
     rospy.set_param('/pu/base_R_shoulder', base_R_shoulder.as_matrix().tolist())
     rospy.set_param('/pu/l_arm', l_arm)

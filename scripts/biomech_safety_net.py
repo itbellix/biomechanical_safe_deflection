@@ -234,7 +234,10 @@ class BS_net:
         if rospy.get_param('/pu/estimate_gh_position') and self.flag_receiving_shoulder_pose:
             ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + self.position_gh_in_base
         else:
-            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + rospy.get_param('/pu/p_gh_in_base')
+            position_gh_in_base_fixed = np.array([rospy.get_param('/pu/p_gh_in_base_x'), 
+                                                  rospy.get_param('/pu/p_gh_in_base_y'), 
+                                                  rospy.get_param('/pu/p_gh_in_base_z')])
+            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + position_gh_in_base_fixed
 
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
@@ -346,7 +349,9 @@ class BS_net:
         self.x_opt = shoulder_state
 
         # fix the position of the center of the shoulder/glenohumeral joint
-        self.position_gh_in_base = rospy.get_param('/pu/p_gh_in_base')
+        self.position_gh_in_base = np.array([rospy.get_param('/pu/p_gh_in_base_x'), 
+                                             rospy.get_param('/pu/p_gh_in_base_y'), 
+                                             rospy.get_param('/pu/p_gh_in_base_z')])
 
         # perform extra things if this is the first time we execute this
         if not self.flag_pub_trajectory:

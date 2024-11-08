@@ -153,7 +153,9 @@ class RobotControlModule:
                 position_gh_in_ee = np.array([0, 0, rospy.get_param('/pu/l_arm')+rospy.get_param('/pu/l_brace')])
                 position_gh_in_base = cart_pose_ee + R_ee@position_gh_in_ee
             else:
-                position_gh_in_base = np.array(rospy.get_param('/pu/p_gh_in_base'))
+                position_gh_in_base = np.array([rospy.get_param('/pu/p_gh_in_base_x'), 
+                                                rospy.get_param('/pu/p_gh_in_base_y'), 
+                                                rospy.get_param('/pu/p_gh_in_base_z')])
                 
             direction_vector = cart_pose_ee - position_gh_in_base
             direction_vector_norm = direction_vector / np.linalg.norm(direction_vector)
