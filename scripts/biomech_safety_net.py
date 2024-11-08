@@ -225,13 +225,14 @@ class BS_net:
         ar = shoulder_pose_ref[2]
 
         # define the required rotations
-        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar - rospy.get_param('ar_offset'))
+        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar - rospy.get_param('/pu/ar_offset'))
 
         base_R_ee = base_R_elb * R.from_euler('x', -np.pi/2)
 
         euler_angles_cmd = base_R_ee.as_euler('xyz') # store also equivalent Euler angles
 
         # find position for the end-effector origin
+        dist_gh_elbow = np.array([0, -(rospy.get_param('/pu/l_arm')+rospy.get_param('/pu/l_brace')), 0])
         if rospy.get_param('/pu/estimate_gh_position') and self.flag_receiving_shoulder_pose:
             ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + self.position_gh_in_base
         else:
@@ -240,12 +241,14 @@ class BS_net:
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
         if torque_ref is not None:
-            k_z = rospy.get_param('/pu/ee_stiffness')[2]
+            k_z = np.array(rospy.get_param('/pu/ee_stiffness'))[2]
             se_estimated = self.state_values_current[2]
             torque_se = torque_ref[1]
             z_current = self.current_ee_pose[2]
 
-            new_z_ref = z_current + torque_se/(k_z * rospy.get_param('/pu/L_tot') * np.sin(se_estimated))
+            L_tot = rospy.get_param('/pu/l_arm') + rospy.get_param('/pu/l_brace')   # extract total length between GH joint center and
+                                                                                    # elbow tip
+            new_z_ref = z_current + torque_se/(k_z * L_tot * np.sin(se_estimated))
             
             # append new z reference (in this way, we can filter both the new and the old)
             ref_cart_point = np.hstack((ref_cart_point, new_z_ref))
@@ -1453,7 +1456,7 @@ if __name__ == '__main__':
         
         nlps_instance.setSolverOptions(solver, opts)
 
-        nlps_instance.setInitialState(x_0 = rospy.get_param('/pu/x_0'))
+        nlps_instance.setInitialState(x_0 = np.array(rospy.get_param('/pu/x_0')))
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
         bsn_module.assign_nlps(nlps_instance)
@@ -1462,15 +1465,15 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        bsn_module.debug_NLPS_formulation()
+        # bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
         # received by the RobotControlModule
-        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = rospy.get_param('/pu/x_0')[0::2], 
-                                            position_gh_in_base = rospy.get_param('/pu/p_gh_in_base'), 
-                                            base_R_sh = rospy.get_param('/pu/base_R_shoulder'), 
-                                            dist_gh_elbow = rospy.get_param('/pu/d_gh_ee_in_shoulder'))
+        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = np.array(rospy.get_param('/pu/x_0'))[0::2], 
+                                            position_gh_in_base = np.array(rospy.get_param('/pu/p_gh_in_base')), 
+                                            base_R_sh = R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))), 
+                                            dist_gh_elbow = np.array(rospy.get_param('/pu/d_gh_ee_in_shoulder')))
 
         # Wait until the robot has reached the required position, and proceed only when the current shoulder pose is published
         bsn_module.waitForShoulderState()

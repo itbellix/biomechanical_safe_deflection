@@ -18,17 +18,25 @@ import os
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+# import parser
+import argparse
+
 def callback(config, level):
     """
     This callback sets parameters of the ROS Parameter Server, so that
     the modifications are accessible to other nodes too. This is done specifically
     with the return command. Before, we can print something to make the user happy!
     """
-    rospy.loginfo("""Reconfigure Request: {int_param}, {double_param},\ 
-          {str_param}, {bool_param}, {size}""".format(**config))
+    rospy.loginfo("""l_arm: {l_arm}, stiff_mult: {stiffness_multiplier}""".format(**config))
     return config
 
 if __name__ == "__main__":
+
+    # check if we are going to allow online parameter updates or not
+    parser = argparse.ArgumentParser(description="Script that initializes ROS parameters")
+    parser.add_argument("--update", required=True, type=str)
+    args = parser.parse_args()
+    allow_update = args.update
 
     rospy.init_node("pu", anonymous = False)    # initialize the pu (parameter updater)
     
@@ -128,7 +136,8 @@ if __name__ == "__main__":
     rospy.set_param('/pu/p_gh_in_base', position_gh_in_base.tolist())
     rospy.set_param('/pu/p_gh_in_ee', position_gh_in_ee.tolist())
     rospy.set_param('/pu/base_R_shoulder', base_R_shoulder.as_matrix().tolist())
-    rospy.set_param('/pu/L_tot', l_arm + l_brace)
+    rospy.set_param('/pu/l_arm', l_arm)
+    rospy.set_param('/pu/l_brace', l_brace)
     rospy.set_param('/pu/d_gh_ee_in_shoulder', dist_shoulder_ee.tolist())
     rospy.set_param('/pu/elb_R_ee', elb_R_ee.as_matrix().tolist())
     rospy.set_param('/pu/estimate_gh_position', False)
@@ -156,5 +165,10 @@ if __name__ == "__main__":
     rospy.set_param('/rostopic/optimization_output', 'optimization_output')
     rospy.set_param('/rostopic/z_level', 'uncompensated_z_ref')
 
-    srv = Server(ParameterUpdateConfig, callback)
-    rospy.spin()
+    print("Parameters have been initialized correctly")
+
+    if allow_update == 'false':
+        print("Cannot modify them during execution")
+    else:
+        srv = Server(ParameterUpdateConfig, callback)
+        rospy.spin()

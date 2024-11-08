@@ -146,18 +146,19 @@ class RobotControlModule:
         if self.initial_pose_reached:
             R_ee = self.ee_pose_curr.R                              # retrieve the rotation matrix defining orientation of EE frame
             cart_pose_ee = self.ee_pose_curr.t                      # retrieve the vector defining 3D position of the EE (in robot base frame)
-            sh_R_elb = np.transpose(rospy.get_param('/pu/base_R_shoulder').as_matrix())@R_ee@np.transpose(rospy.get_param('/pu/elb_R_ee').as_matrix())
+            sh_R_elb = np.transpose(R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix())@R_ee@np.transpose(R.from_matrix(np.array(rospy.get_param('/pu/elb_R_ee'))).as_matrix())
 
             # calculate the instantaneous position of the center of the shoulder/glenohumeral joint
             if rospy.get_param('/pu/estimate_gh_position'):
-                position_gh_in_base = cart_pose_ee + R_ee@rospy.get_param('/pu/p_gh_in_ee')
+                position_gh_in_ee = np.array([0, 0, rospy.get_param('/pu/l_arm')+rospy.get_param('/pu/l_brace')])
+                position_gh_in_base = cart_pose_ee + R_ee@position_gh_in_ee
             else:
-                position_gh_in_base = rospy.get_param('/pu/p_gh_in_base')
+                position_gh_in_base = np.array(rospy.get_param('/pu/p_gh_in_base'))
                 
             direction_vector = cart_pose_ee - position_gh_in_base
             direction_vector_norm = direction_vector / np.linalg.norm(direction_vector)
 
-            direction_vector_norm_in_shoulder = np.transpose(rospy.get_param('/pu/base_R_shoulder').as_matrix())@direction_vector_norm
+            direction_vector_norm_in_shoulder = np.transpose(R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix())@direction_vector_norm
 
             # 1. we estimate the coordinate values
             # The rotation matrix expressing the elbow frame in shoulder frame is approximated as:
@@ -183,21 +184,23 @@ class RobotControlModule:
 
             # 2. we estimate the coordinate velocities (here the robot and the human are interacting as a geared mechanism)
             # 2.1 estimate the velocity along the plane of elevation
-            sh_twist = rospy.get_param('/pu/base_R_shoulder').as_matrix().T @ self.ee_twist_curr.reshape((2,3)).T
-            r = np.array([rospy.get_param('/pu/L_tot') * np.cos(pe), rospy.get_param('/pu/L_tot') * np.sin(pe)])
+            sh_twist = R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix().T @ self.ee_twist_curr.reshape((2,3)).T
+            L_tot = rospy.get_param('/pu/l_arm') + rospy.get_param('/pu/l_brace')   # total distance between GH joint and elbow tip
+            
+            r = np.array([L_tot * np.cos(pe), L_tot * np.sin(pe)])
 
             # calculating the angular velocity around the Y axis of the shoulder frame (pointing upwards)
             # formula : omega = radius_vec X velocity_vec / (||radius_vec||^2)
-            # velocities and radius are considered on the plane perpendicular to Y (so, the Z-X plane)rospy.get_param('/pu/
-            pe_dot = np.cross(r, np.array([sh_twist[2,0], sh_twist[0,0]]))/(rospy.get_param('/pu/L_tot')**2)
+            # velocities and radius are considered on the plane perpendicular to Y (so, the Z-X plane)
+            pe_dot = np.cross(r, np.array([sh_twist[2,0], sh_twist[0,0]]))/(L_tot**2)
 
             # 2.2. estimate the velocity along the shoulder elevation
             # First transform the twist in the local frame where this DoF is defined, then apply the same
             # formula as above to obtain angular velocity given the linear speed and distance from the rotation axis
             # Note the minus sign in front of the cross-product, for consistency with the model definition.
             local_twist = R.from_euler('y', pe).as_matrix().T @ sh_twist
-            r = np.array([rospy.get_param('/pu/L_tot') * np.sin(se), -rospy.get_param('/pu/L_tot') * np.cos(se)])
-            se_dot = np.cross(r, np.array([local_twist[2,0], local_twist[1,0]]))/(rospy.get_param('/pu/L_tot')**2)
+            r = np.array([L_tot * np.sin(se), -L_tot * np.cos(se)])
+            se_dot = np.cross(r, np.array([local_twist[2,0], local_twist[1,0]]))/(L_tot**2)
 
             # 2.3 estimate the velocity along the axial rotation
             elb_twist = R.from_euler('x', -se).as_matrix().T @ local_twist
@@ -653,11 +656,11 @@ if __name__ == "__main__":
                         control_module.reference_tracker.flag = True
                         control_module.reference_tracker.joints = [3]
                         if simulation == True:
-                            control_module.reference_tracker.stiffness = rospy.get_param('/pu/ns_elb_stiffness_sim')
-                            control_module.reference_tracker.damping = rospy.get_param('/pu/ns_elb_damping_sim')
+                            control_module.reference_tracker.stiffness = np.array(rospy.get_param('/pu/ns_elb_stiffness_sim'))
+                            control_module.reference_tracker.damping = np.array(rospy.get_param('/pu/ns_elb_damping_sim'))
                         else:
-                            control_module.reference_tracker.stiffness = rospy.get_param('/pu/ns_elb_stiffness')
-                            control_module.reference_tracker.damping = rospy.get_param('/pu/ns_elb_damping')
+                            control_module.reference_tracker.stiffness = np.array(rospy.get_param('/pu/ns_elb_stiffness'))
+                            control_module.reference_tracker.damping = np.array(rospy.get_param('/pu/ns_elb_damping'))
                         
                         control_module.client.send_goal(control_module.reference_tracker)
                         result = control_module.client.wait_for_result()
@@ -690,11 +693,11 @@ if __name__ == "__main__":
                         # switch to pure cartesian mode
                         # further increase stiffness
                         if simulation == True:
-                            stiffness_higher = rospy.get_param('/pu/ee_stiffness_sim')
-                            damping_higher = rospy.get_param('/pu/ee_damping_sim')
+                            stiffness_higher = np.array(rospy.get_param('/pu/ee_stiffness_sim'))
+                            damping_higher = np.array(rospy.get_param('/pu/ee_damping_sim'))
                         else:
-                            stiffness_higher = rospy.get_param('/pu/ee_stiffness')
-                            damping_higher = rospy.get_param('/pu/ee_damping')
+                            stiffness_higher = np.array(rospy.get_param('/pu/ee_stiffness'))
+                            damping_higher = np.array(rospy.get_param('/pu/ee_damping'))
 
                         control_module.reference_tracker.mode = 'ee_cartesian'
                         control_module.reference_tracker.reference = []
