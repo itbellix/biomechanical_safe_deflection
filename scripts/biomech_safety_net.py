@@ -101,7 +101,13 @@ class BS_net:
         self.ee_cart_stiffness_cmd = None       # stiffness value sent to the Cartesian impedance controller
         self.ee_cart_damping_cmd = None         # damping value sent to the Cartesian impedance controller
 
-        self.ee_cart_stiffness_default = np.array([400, 400, 400, 5, 5, 1]).reshape((6,1))
+        # CIC parameters
+        trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
+        rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
+        rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+        self.ee_cart_stiffness_default = np.array([trans_stiff, trans_stiff, trans_stiff,
+                                                   rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+        
         self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
 
         self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
@@ -242,7 +248,7 @@ class BS_net:
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
         if torque_ref is not None:
-            k_z = np.array(rospy.get_param('/pu/ee_stiffness'))[2]
+            k_z = rospy.get_param('/pu/ee_trans_stiff')
             se_estimated = self.state_values_current[2]
             torque_se = torque_ref[1]
             z_current = self.current_ee_pose[2]
@@ -723,10 +729,15 @@ class BS_net:
             self.x_opt = np.deg2rad(np.array([curr_closest_point[0], 0, curr_closest_point[1], 0, ar, 0]).reshape((6,1)))
 
             # choose Cartesian stiffness and damping for the robot's impedance controller
-            # we set high values so that alternative reference is tracked
-            # (the subject will be pulled out of the unsafe zone)
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
-            self.ee_cart_damping_cmd = self.ee_cart_damping_default
+            # these values can be adjusted by the user to explore different modalities of HRI
+            # (the subject will be pulled out of the unsafe zone with a force proportional to this)
+            trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
+            rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
+            rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff, trans_stiff, trans_stiff, rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+
 
 
     def damp_unsafe_velocities(self):
@@ -951,7 +962,12 @@ class BS_net:
             # plt.show()
 
             # increase stiffness to actually track the optimal deflected trajectory
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+            trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
+            rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
+            rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff, trans_stiff, trans_stiff, 
+                                                   rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
             # sleep for the duration of the optimized trajectory
@@ -1033,8 +1049,13 @@ class BS_net:
             self.u_opt = None       # TODO: we are ignoring u_opt for now
 
             # increase stiffness to actually track the optimal deflected trajectory
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
-            self.ee_cart_damping_cmd = self.ee_cart_damping_default
+            # values of stiffness can be updated in real-time
+            trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
+            rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
+            rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff, trans_stiff, trans_stiff, rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             # sleep for the duration of the optimized trajectory
             rospy.sleep(self.nlps.T)

@@ -27,8 +27,9 @@ def callback(config, level):
     the modifications are accessible to other nodes too. This is done specifically
     with the return command. Before, we can print something to make the user happy!
     """
-    rospy.loginfo("""l_arm: {l_arm}, stiff_mult: {stiffness_multiplier},
-                  p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}]""".format(**config))
+    rospy.loginfo("""l_arm: {l_arm},
+                  p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}],
+                  cart stiff:[{ee_trans_stiff}, {ee_trans_stiff}, {ee_trans_stiff}, {ee_rot_stiff_xy}, {ee_rot_stiff_xy}, {ee_rot_stiff_z}]""".format(**config))
     return config
 
 if __name__ == "__main__":
@@ -112,15 +113,13 @@ if __name__ == "__main__":
     ns_elb_stiffness = np.array([10, 10, 10])
     ns_elb_damping = 2*np.sqrt(ns_elb_stiffness)
 
-    ee_stiffness = np.array([400, 400, 400, 15, 15, 4])
-    ee_damping = 2*np.sqrt(ee_stiffness) 
+    ee_trans_stiff = 400
+    ee_rot_stiff_xy = 15
+    ee_rot_stiff_z = 4 
 
     # option to change these only in simulation
     ns_elb_stiffness_sim = ns_elb_stiffness
     ns_elb_damping_sim = ns_elb_damping
-
-    ee_stiffness_sim = ee_stiffness
-    ee_damping_sim = ee_damping
 
     # -------------------------------------------------------------------------------
     # experimental parameters used by both the TO and the robot control modules
@@ -150,12 +149,11 @@ if __name__ == "__main__":
     rospy.set_param('/pu/speed_estimate', speed_estimate)
     rospy.set_param('/pu/ns_elb_stiffness', ns_elb_stiffness.tolist())
     rospy.set_param('/pu/ns_elb_damping', ns_elb_damping.tolist())
-    rospy.set_param('/pu/ee_stiffness', ee_stiffness.tolist())
-    rospy.set_param('/pu/ee_damping', ee_damping.tolist())
-    rospy.set_param('/pu/ns_elb_stiffness_sim', ns_elb_stiffness_sim.tolist())
-    rospy.set_param('/pu/ns_elb_damping_sim', ns_elb_damping_sim.tolist())
-    rospy.set_param('/pu/ee_stiffness_sim', ee_stiffness_sim.tolist())
-    rospy.set_param('/pu/ee_damping_sim', ee_damping_sim.tolist())
+
+    # define the parameters for the CIC
+    rospy.set_param('/pu/ee_trans_stiff', ee_trans_stiff)
+    rospy.set_param('/pu/ee_rot_stiff_xy', ee_rot_stiff_xy)
+    rospy.set_param('/pu/ee_rot_stiff_z', ee_rot_stiff_z)
 
     # -------------------------------------------------------------------------------
     # names of the ROS topics on which the shared communication between biomechanical-based optimization 

@@ -644,8 +644,6 @@ if __name__ == "__main__":
                                                                 # (from interpolation between current state and desired pose)
                     precision = 1e-2                            # precision required for reaching the goal [m]
                     stiffness = np.array([300, 300, 300, 10, 10, 2])
-                    # stiffness = np.array([200, 200, 200, 15, 15, 2])    # low stiffness (issue #162)
-                    # stiffness = np.array([350, 350, 350, 45, 45, 10])   # high stiffness (issue #162)
                     damping = np.sqrt(stiffness)             # decrease damping to increase stability
 
                     print("moving to initial position")
@@ -657,12 +655,9 @@ if __name__ == "__main__":
                         control_module.reference_tracker.reference = np.array([0.0, 0.0, 0.55])
                         control_module.reference_tracker.flag = True
                         control_module.reference_tracker.joints = [3]
-                        if simulation == True:
-                            control_module.reference_tracker.stiffness = np.array(rospy.get_param('/pu/ns_elb_stiffness_sim'))
-                            control_module.reference_tracker.damping = np.array(rospy.get_param('/pu/ns_elb_damping_sim'))
-                        else:
-                            control_module.reference_tracker.stiffness = np.array(rospy.get_param('/pu/ns_elb_stiffness'))
-                            control_module.reference_tracker.damping = np.array(rospy.get_param('/pu/ns_elb_damping'))
+
+                        control_module.reference_tracker.stiffness = np.array(rospy.get_param('/pu/ns_elb_stiffness'))
+                        control_module.reference_tracker.damping = np.array(rospy.get_param('/pu/ns_elb_damping'))
                         
                         control_module.client.send_goal(control_module.reference_tracker)
                         result = control_module.client.wait_for_result()
@@ -694,12 +689,12 @@ if __name__ == "__main__":
                     if control_module.initial_pose_reached:
                         # switch to pure cartesian mode
                         # further increase stiffness
-                        if simulation == True:
-                            stiffness_higher = np.array(rospy.get_param('/pu/ee_stiffness_sim'))
-                            damping_higher = np.array(rospy.get_param('/pu/ee_damping_sim'))
-                        else:
-                            stiffness_higher = np.array(rospy.get_param('/pu/ee_stiffness'))
-                            damping_higher = np.array(rospy.get_param('/pu/ee_damping'))
+                        trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
+                        rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
+                        rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+
+                        stiffness_higher = np.array([trans_stiff, trans_stiff, trans_stiff, rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+                        damping_higher = 2 * np.sqrt(stiffness_higher)
 
                         control_module.reference_tracker.mode = 'ee_cartesian'
                         control_module.reference_tracker.reference = []
