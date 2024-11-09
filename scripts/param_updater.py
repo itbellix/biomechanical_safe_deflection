@@ -29,7 +29,8 @@ def callback(config, level):
     """
     rospy.loginfo("""l_arm: {l_arm},
                   p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}],
-                  cart stiff:[{ee_trans_stiff}, {ee_trans_stiff}, {ee_trans_stiff}, {ee_rot_stiff_xy}, {ee_rot_stiff_xy}, {ee_rot_stiff_z}]""".format(**config))
+                  high cart stiff:[{ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_z_h}],
+                  mode:{interaction_mode}, task:{task}, execute:{execute_program}""".format(**config))
     return config
 
 if __name__ == "__main__":
@@ -113,9 +114,15 @@ if __name__ == "__main__":
     ns_elb_stiffness = np.array([10, 10, 10])
     ns_elb_damping = 2*np.sqrt(ns_elb_stiffness)
 
-    ee_trans_stiff = 400
-    ee_rot_stiff_xy = 15
-    ee_rot_stiff_z = 4 
+    # control parameters for when the robot needs to deflect the user (high stiffness, damping will be 2*srqt(...))
+    ee_trans_stiff_h = 400
+    ee_rot_stiff_xy_h = 15
+    ee_rot_stiff_z_h = 4 
+
+    # control parameters for when the user moves around safely (low stiffness, damping will be 2*srqt(...))
+    ee_trans_stiff_l = 400
+    ee_rot_stiff_xy_l = 15
+    ee_rot_stiff_z_l = 4 
 
     # option to change these only in simulation
     ns_elb_stiffness_sim = ns_elb_stiffness
@@ -151,9 +158,23 @@ if __name__ == "__main__":
     rospy.set_param('/pu/ns_elb_damping', ns_elb_damping.tolist())
 
     # define the parameters for the CIC
-    rospy.set_param('/pu/ee_trans_stiff', ee_trans_stiff)
-    rospy.set_param('/pu/ee_rot_stiff_xy', ee_rot_stiff_xy)
-    rospy.set_param('/pu/ee_rot_stiff_z', ee_rot_stiff_z)
+    # high stiffness (for when the robot needs to actively deflect the subject)
+    rospy.set_param('/pu/ee_trans_stiff_h', ee_trans_stiff_h)
+    rospy.set_param('/pu/ee_rot_stiff_xy_h', ee_rot_stiff_xy_h)
+    rospy.set_param('/pu/ee_rot_stiff_z_h', ee_rot_stiff_z_h)
+    # low stiffness (for when the subject moves around undisturbed)
+    rospy.set_param('/pu/ee_trans_stiff_l', ee_trans_stiff_l)
+    rospy.set_param('/pu/ee_rot_stiff_xy_l', ee_rot_stiff_xy_l)
+    rospy.set_param('/pu/ee_rot_stiff_z_l', ee_rot_stiff_z_l)
+
+    # define the parameters for the interaction mode
+    rospy.set_param('/pu/interaction_mode', 0)
+
+    # define the parameter for the task (0 means just wait)
+    rospy.set_param('/pu/task', 0)
+
+    # define parameter for terminating execution
+    rospy.set_param('/pu/execute_program', True)
 
     # -------------------------------------------------------------------------------
     # names of the ROS topics on which the shared communication between biomechanical-based optimization 

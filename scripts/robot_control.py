@@ -133,6 +133,7 @@ class RobotControlModule:
         self.topic_rmr = '/kukadat'
         self.pub_rmr_data = rospy.Publisher(self.topic_rmr, Float32MultiArray, queue_size = 1)
 
+
     def _callback_ee_pose(self,data):
         """
         This callback is linked to the ROS subscriber that listens to the topic where the cartesian pose of the EE is published.
@@ -222,7 +223,6 @@ class RobotControlModule:
                 self.human_pose_estimated[8] = 0            # we initialize the accelerations to be 0
                 self.human_pose_estimated[9:] = position_gh_in_base     # also the position of the GH joint center is 
                                                                         # part of the human pose
-
 
                 self.last_timestamp = rospy.Time.now().to_time()
 
@@ -574,36 +574,6 @@ if __name__ == "__main__":
         # flag that determines if the robotic therapy should keep going
         ongoing_therapy = True
 
-        # initialize tkinter to set up a state machine in the code execution logic
-        root = tk.Tk()
-        root.title("Robot Interface (keep it selected)")
-
-        # create the window that the user will have to keep selected to give their inputs
-        window = tk.Canvas(root, width=500, height=200)
-        window.pack()
-
-        # Static caption
-        caption_text = """Use the following keys to control the robot:
-                        - 'a' to approach the starting pose for the therapy
-                        - 's' to (re)start the therapy
-                        - 'p' to pause the therapy
-                        - 't' to run do some testing
-                        - 'z' to set cartesian stiffness and damping to 0
-                        - 'q' to quit the therapy"""
-        
-        window.create_text(250, 100, text=caption_text, font=("Helvetica", 12), fill="black")
-
-
-        # StringVar to store the pressed key
-        pressed_key = tk.StringVar()
-
-        def on_key_press(event):
-            # update the StringVar with the pressed key
-            pressed_key.set(event.char)
-
-        # bind the key press event to the callback function
-        root.bind("<Key>", on_key_press)
-
         # instantiate a RobotControlModule with the correct shared ros topics (coming from experiment_parameters.py)
         control_module = RobotControlModule()
 
@@ -623,17 +593,19 @@ if __name__ == "__main__":
         control_module.togglePublishingEEPose(True, control_module.reference_tracker)
         print("Current pose is being published")
 
-        while not rospy.is_shutdown() and ongoing_therapy:
-            # state machine to allow for easier interface
-            # it checks if there is a user input, and set parameters accordingly
-            try:
-                # wait for an event to occur
-                event = root.wait_variable(pressed_key)
+        # initialize last task that has been executed (none for now)
+        last_task = 0
 
-                # handle the event
+        while not rospy.is_shutdown() and ongoing_therapy:            
+            # check if user wants to execute program
+            if rospy.get_param('/pu/execute_program'):
+                
+                task_to_execute = rospy.get_param('/pu/task')
 
-                # 'a': approach initial pose
-                if pressed_key.get() == "a":
+                # approach initial pose
+                if last_task!=task_to_execute and task_to_execute==1:
+                    # update last task
+                    last_task = 1
                     if control_module.getEEDesiredPose() is None:         # be sure that we know where to go
                         print("waiting for initial pose to be known")
                         while control_module.getEEDesiredPose() is None:
@@ -684,16 +656,19 @@ if __name__ == "__main__":
                     else:
                         print("Initial position could not be reached... Try again!")
 
-                # 's' : start the therapy
-                if pressed_key.get() == "s":
+                # start the therapy
+                if last_task!=task_to_execute and task_to_execute==2:
+                    # update last task
+                    last_task = 2
                     if control_module.initial_pose_reached:
                         # switch to pure cartesian mode
                         # further increase stiffness
-                        trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
-                        rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
-                        rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+                        trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+                        rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+                        rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
 
-                        stiffness_higher = np.array([trans_stiff, trans_stiff, trans_stiff, rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+                        stiffness_higher = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h,
+                                                     rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h])
                         damping_higher = 2 * np.sqrt(stiffness_higher)
 
                         control_module.reference_tracker.mode = 'ee_cartesian'
@@ -712,14 +687,45 @@ if __name__ == "__main__":
                     else:
                         print("Robot is not in the initial pose yet. Doing nothing.")
 
-                # 'p' : pause the therapy
-                if pressed_key.get() == "p":
+                # pause the therapy
+                if last_task!=task_to_execute and task_to_execute==3:
+                    #update last task
+                    last_task = 3
                     print("Pause trajectory generation")
                     topic = rospy.get_param('/rostopic/cartesian_ref_ee')
                     control_module.trackReferenceOnTopic('/'+topic, False)
 
-                # 't' : test something
-                if pressed_key.get() == "t":
+                # set cartesian stiffness and damping to 0
+                if last_task!=task_to_execute and task_to_execute==4:
+                    #update last task
+                    last_task = 4
+
+                    print("Zero stiffness/damping in 5 seconds")
+                    time.sleep(2)
+                    print("3")
+                    time.sleep(1)
+                    print("2")
+                    time.sleep(1)
+                    print("1")
+                    time.sleep(1)
+
+                    # switch to zero stiffness and damping
+                    ref = []
+                    time_movement = 3
+                    stiffness = np.array([0, 0, 0, 0, 0, 0])
+                    damping = np.array([0, 0, 0, 0, 0, 0])
+                    nullspace_gain = np.array([0, 0, 0, 0, 1, 1, 0.5])
+                    nullspace_reference = np.array([0, 0, 0, 0, 0, 0, 0])
+                    control_module.test_publish_cartesian(ref, time_movement, stiffness, damping, nullspace_gain, nullspace_reference)
+                    
+                    #confirm that everything went smoothly
+                    print("Free movement possible")
+
+                # test something
+                if last_task!=task_to_execute and task_to_execute==5:
+                    # update last task
+                    last_task = 5
+
                     print("Moving to initial pose for testing")
                     # TEST: send a fixed goal to move to a known position, then start sending a trajectory reference 
                     # to see if we can do it properly
@@ -742,7 +748,6 @@ if __name__ == "__main__":
                     control_module.client.send_goal(control_module.reference_tracker)
                     result = control_module.client.wait_for_result()
 
-                    
                     input("Press any key to move ee to new position")
                     cartesian_0 = np.array([-0.6, 0, 0.7])
 
@@ -755,42 +760,21 @@ if __name__ == "__main__":
 
                     print("Done")
 
-                # 'z' set cartesian stiffness and damping to 0
-                if pressed_key.get() == 'z':
-                    print("Zero stiffness/damping in 5 seconds")
-                    time.sleep(2)
-                    print("3")
-                    time.sleep(1)
-                    print("2")
-                    time.sleep(1)
-                    print("1")
-                    time.sleep(1)
+                else:
+                    # to allow ROS to execute other tasks if needed
+                    ros_rate.sleep()
 
-                    # switch to zero stiffness and damping
-                    ref = []
-                    time_movement = 3
-                    stiffness = np.array([0, 0, 0, 0, 0, 0])
-                    damping = np.array([0, 0, 0, 0, 0, 0])
-                    nullspace_gain = np.array([0, 0, 0, 0, 1, 1, 0.5])
-                    nullspace_reference = np.array([0, 0, 0, 0, 0, 0, 0])
-                    control_module.test_publish_cartesian(ref, time_movement, stiffness, damping, nullspace_gain, nullspace_reference)
-                    
-                    #confirm that everything went smoothly
-                    print("Free movement possible")
+            # if necessary, quit the execution, and freeze the robot to the current pose
+            else:
+                print("shutting down - freezing to current position")
+                control_module.stop()
 
-                # 'q': quit the execution, and freeze the robot to the current pose
-                if pressed_key.get() == "q":
-                    print("shutting down - freezing to current position")
-                    control_module.stop()
+                # adjust flag for termination
+                ongoing_therapy = False
 
-                    # adjust flag for termination
-                    ongoing_therapy = False
 
-            except tk.TclError:
-                # root is destroyed (e.g., window closed)
-                break
-            # to allow ROS to execute other tasks if needed
-            ros_rate.sleep()
+        # do nothing
+        ros_rate.sleep()
 
     except rospy.ROSInterruptException:
         pass

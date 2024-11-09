@@ -102,11 +102,11 @@ class BS_net:
         self.ee_cart_damping_cmd = None         # damping value sent to the Cartesian impedance controller
 
         # CIC parameters
-        trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
-        rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
-        rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+        trans_stiff = rospy.get_param('/pu/ee_trans_stiff_h')
+        rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+        rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z_h')
         self.ee_cart_stiffness_default = np.array([trans_stiff, trans_stiff, trans_stiff,
-                                                   rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+                                                   rot_stiff_xy, rot_stiff_xy, rot_stiff_z]).reshape((6,1))
         
         self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
 
@@ -173,10 +173,6 @@ class BS_net:
         # create a subscriber to catch when the trajectory optimization should be running
         self.flag_run = False
         self.sub_run= rospy.Subscriber(rospy.get_param('/rostopic/request_reference'), Bool, self._flag_run_cb, queue_size=1)
-
-        # create a thread to catch the input from teh user, who will select the robot's interaction mode
-        self.interaction_mode = 0
-        self.input_thread = threading.Thread(target=self.input_thread_fnc, daemon=True)
 
 
     def setCurrentEllipseParams(self, all_params_ellipse):
@@ -248,14 +244,14 @@ class BS_net:
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
         if torque_ref is not None:
-            k_z = rospy.get_param('/pu/ee_trans_stiff')
+            k_z = rospy.get_param('/pu/ee_trans_stiff_h')
             se_estimated = self.state_values_current[2]
             torque_se = torque_ref[1]
             z_current = self.current_ee_pose[2]
 
             L_tot = rospy.get_param('/pu/l_arm') + rospy.get_param('/pu/l_brace')   # extract total length between GH joint center and
                                                                                     # elbow tip
-            new_z_ref = z_current + torque_se/(k_z * L_tot * np.sin(se_estimated))
+            new_z_ref = z_current + torque_se/((k_z+1) * L_tot * np.sin(se_estimated))
             
             # append new z reference (in this way, we can filter both the new and the old)
             ref_cart_point = np.hstack((ref_cart_point, new_z_ref))
@@ -448,7 +444,7 @@ class BS_net:
         the computations/publishing to be performed, such that this happens only if the robot controller needs it.
         """
         # frequency of discretization of the future human movement is used
-        if self.interaction_mode == 3:
+        if rospy.get_param('/pu/interaction_mode') == 3:
             # if we are using the solution from the NLPS, then be coherent with the discretization
             rate = rospy.Rate(1/self.nlps.h)
         else:
@@ -484,17 +480,6 @@ class BS_net:
                         self.publishCartRef(cmd_shoulder_pose, cmd_torques, base_R_sh)
 
             rate.sleep()
-
-
-    def input_thread_fnc(self):
-        while True:
-            try:
-                # Read user input (this happens asynchronously as executed in a thread)
-                interaction_mode = input("Select interaction mode (0, 1, 2 or 3):\n")
-                print(": interaction mode selected")
-                self.interaction_mode = int(interaction_mode)
-            except ValueError:
-                print("Invalid input, please enter a number between 0 and 3")
 
 
     def setReferenceToCurrentPose(self):
@@ -731,13 +716,12 @@ class BS_net:
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # these values can be adjusted by the user to explore different modalities of HRI
             # (the subject will be pulled out of the unsafe zone with a force proportional to this)
-            trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
-            rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
-            rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+            trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+            rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+            rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
 
-            self.ee_cart_stiffness_cmd = np.array([trans_stiff, trans_stiff, trans_stiff, rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h, rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
             self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
-
 
 
     def damp_unsafe_velocities(self):
@@ -962,11 +946,11 @@ class BS_net:
             # plt.show()
 
             # increase stiffness to actually track the optimal deflected trajectory
-            trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
-            rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
-            rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
-            self.ee_cart_stiffness_cmd = np.array([trans_stiff, trans_stiff, trans_stiff, 
-                                                   rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+            trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+            rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+            rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h, 
+                                                   rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
 
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
@@ -1050,11 +1034,12 @@ class BS_net:
 
             # increase stiffness to actually track the optimal deflected trajectory
             # values of stiffness can be updated in real-time
-            trans_stiff = rospy.get_param('/pu/ee_trans_stiff')
-            rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy')
-            rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z')
+            trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+            rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+            rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
 
-            self.ee_cart_stiffness_cmd = np.array([trans_stiff, trans_stiff, trans_stiff, rot_stiff_xy, rot_stiff_xy, rot_stiff_z])
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h,
+                                                   rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
             self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             # sleep for the duration of the optimized trajectory
@@ -1063,98 +1048,6 @@ class BS_net:
             # decrease stiffness again so that subject can continue their movement
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
             self.ee_cart_damping_cmd = self.ee_cart_damping_low
-
-
-    def predict_future_state_old(self):
-        """
-        This function is used to predict the future state of the human body, which is found assuming that the human
-        will continue exerting a constant torque along their DoFs. The future trajectory for the human model is saved
-        in the variable x_opt, that can be then visualized for debugging.
-        """
-        assert self.nlps is not None, "The NLP has not been defined yet, cannot continue"
-
-        # disable robot's reference trajectory publishing
-        self.flag_pub_trajectory = False
-
-        # initialize flag to monitor if the solver found an optimal solution
-        failed = 0
-
-        # first, we estimate the current human torques given the current position, velocity and acceleration of the model
-        u_hat_hum = self.nlps.opensimAD_ID(self.state_values_current)[0:2]
-
-        # initial state for the human model
-        initial_state = self.state_values_current[0:6]
-
-        # if we are considering strain in our formulation, add the parameters of the strainmap to the numerical input
-        if self.nlps.num_gaussians>0:
-            params_g1 = self.nlps.all_params_gaussians[0:6]
-            params_g2 = self.nlps.all_params_gaussians[6:12]
-            params_g3 = self.nlps.all_params_gaussians[12:18]
-
-            # solve the NLP problem given the current state of the system (with strain information)
-            # we solve the NLP, and catch if there was an error. If so, notify the user and retry
-            try:
-                time_start = time.time()
-                x_opt, u_opt, j_opt, _, strain_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4], params_g1, params_g2, params_g3)
-                time_execution = time.time()-time_start
-                strain_opt = strain_opt.full().reshape(1, self.nlps.N+1, order='F')
-
-            except Exception as e:
-                print('Solver failed:', e)
-                print('retrying ...')
-                failed = 1
-
-        else:
-            # solve the NLP problem given the current state of the system (without strain information)
-            # we solve the NLP, and catch if there was an error. If so, notify the user and retry
-            try:
-                time_start = time.time()
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4])
-                time_execution = time.time() - time_start
-
-                strain_opt = np.nan * np.ones((1, self.nlps.N+1))  # still fill the optimal strain values with NaNs
-
-            except Exception as e:
-                print('Solver failed:', e)
-                print('retrying ...')
-                failed = 1
-
-        self.nlp_count += 1         # update the number of iterations until now
-        self.failed_count += failed # update number of failed iterations
-
-        # only do the remaining steps if we have a new solution
-        if not failed:
-            # convert the solution to numpy arrays, and store them to be processed
-            x_opt = x_opt.full().reshape(self.nlps.dim_x, self.nlps.N+1, order='F')
-            u_opt = u_opt.full().reshape(self.nlps.dim_u, self.nlps.N, order='F')
-
-            # save the strain value
-            self.strain_opt = strain_opt
-            
-            # update the optimal values that are stored in the BSN module. 
-            # They can be accessed only if there is no other process that is modifying them
-            with self.x_opt_lock:
-                # self.x_opt = x_opt[:, 1::]      # the first point is discarded, as it is the current one
-                self.x_opt = x_opt[:, 2::]      # the first points are discarded, to compensate for relatively low stiffness of the controller
-                self.u_opt = u_opt[:,1::]       # same as above, to guarantee consistency
-
-            # update average running time
-            self.avg_nlp_time = ((self.avg_nlp_time * self.nlp_count) + time_execution) / (self.nlp_count+1)
-
-            # update the optimal values that are stored in the NLPS module as well
-            self.nlps.x_opt = x_opt      
-            self.nlps.u_opt = u_opt
-
-            # publish the optimal values to a ROS topic, so that they can be recorded during experiments
-            message = Float64MultiArray()
-            u_opt = np.concatenate((u_opt, np.atleast_2d(np.nan*np.ones((self.nlps.dim_u,1)))), axis = 1)  # adding one NaN to match dimensions of other arrays
-            activation = self.activation_level*self.delta_activation + self.min_activation
-            message.data = np.hstack((np.vstack((x_opt, u_opt, strain_opt)).flatten(), activation))    # stack the three outputs in a single message (plus activation), and flatten it for publishing
-            self.pub_optimization_output.publish(message)
-
-            return u_opt, x_opt, j_opt, strain_opt
-
-            # TODO is now to test that the current acceleration is received and properly used by f_ID,AD
 
 
     def debug_sysDynamics(self):
@@ -1387,8 +1280,6 @@ class BS_net:
         
         print ("avg time: ", np.round(time_duration.sum()/instances, 3))
 
-        aux = 0
-
 
 # ----------------------------------------------------------------------------------------------
 
@@ -1512,27 +1403,21 @@ if __name__ == '__main__':
         print("1")
         time.sleep(1)
 
-        # start the loop processing user input
-        bsn_module.input_thread.start()
-
         # start to provide the safe reference as long as the robot is requesting it
         # we do so in a way that allows temporarily pausing the therapy
         while not rospy.is_shutdown():
             if bsn_module.keepRunning():
 
-                if bsn_module.interaction_mode == 0:        # mode = 0: keep current pose and wait
+                if rospy.get_param('/pu/interaction_mode') == 0:        # mode = 0: keep current pose and wait
                     bsn_module.setReferenceToCurrentPose()
 
-                elif bsn_module.interaction_mode == 1:        # mode = 1: monitor unsafe zones
+                elif rospy.get_param('/pu/interaction_mode') == 1:        # mode = 1: monitor unsafe zones
                     bsn_module.monitor_unsafe_zones()
                     
-                elif bsn_module.interaction_mode == 2:        # mode = 2: damp velocities in unsafe areas
+                elif rospy.get_param('/pu/interaction_mode') == 2:        # mode = 2: damp velocities in unsafe areas
                     bsn_module.damp_unsafe_velocities()
 
-                elif bsn_module.interaction_mode == 3:
-                    bsn_module.predict_future_state_kinematic(N = 10, T = 1)
-
-                elif bsn_module.interaction_mode == 4:
+                elif rospy.get_param('/pu/interaction_mode') == 3:
                     bsn_module.predict_future_state_simple(N = 10, T = 1)
                     
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
