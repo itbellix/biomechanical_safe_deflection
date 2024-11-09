@@ -67,6 +67,7 @@ class RealTimeStrainMapVisualizer:
             self.custom_palette = [tuple(color) for color in self.custom_palette.tolist()]
 
         self.is_running = False
+        self.is_initialized = False
 
 
     def map_to_color(self, values):
@@ -161,7 +162,7 @@ class RealTimeStrainMapVisualizer:
         """
         # check if this is the first time that the visualizer is used
         # if so, instantiate the window first
-        if not self.is_running:
+        if not self.is_initialized:
             pygame.init()
             self.clock = pygame.time.Clock()
             self.screen = pygame.display.set_mode(self.widow_dimensions)
@@ -173,6 +174,7 @@ class RealTimeStrainMapVisualizer:
             self.font_ticks_pygame = pygame.font.Font(None, self.font_ticks)
 
             self.is_running = True
+            self.is_initialized = True
 
         current_strainmap = np.zeros(self.X_norm.shape)
 
@@ -265,4 +267,5 @@ class RealTimeStrainMapVisualizer:
 
 
     def quit(self):
+        self.is_running = False
         pygame.quit()

@@ -70,9 +70,6 @@ class BS_net:
         self.num_params_ellipses = 4    # each unsafe zone will be defined by a 2D ellipse. Its parameters are x0, y0, a^2 and b^2
                                         # the expression for the ellipse is (x-x0)^2/a^2+(y-y0)^2/b^2=1
 
-        # Definition of the "risky strain" (related to INTERACTION MODE 2)
-        self.risky_strain = 2.0      # value of strain [%] that is considered risky
-
         # definition of the state variables
         self.state_space_names = None               # The names of the coordinates in the model that describe the state-space in which we move
                                                     # For the case of our shoulder rehabilitation, it will be ["plane_elev", "shoulder_elev", "axial_rot"]
@@ -397,6 +394,16 @@ class BS_net:
 
         self.current_ee_pose = np.array(data.data[-3:])   # update estimate of where the robot is now (last 3 elements)
 
+        # update the Gaussian parameters if those are ROS params
+        if rospy.has_param('/pu/amplitude'):
+            self.all_params_gaussians = np.array([rospy.get_param('/pu/amplitude'),
+                                                  rospy.get_param('/pu/x0')/160,
+                                                  rospy.get_param('/pu/y0')/144,
+                                                  rospy.get_param('/pu/sigma_x')/160,
+                                                  rospy.get_param('/pu/sigma_y')/144,
+                                                  rospy.get_param('/pu/strain_offset')])
+
+
         # set up a logic that allows to start and update the visualization of the current strainmap at a given frequency
         # We set this fixed frequency to be 10 Hz
         if np.round(time_now-np.fix(time_now), 2) == np.round(time_now-np.fix(time_now),1):
@@ -538,6 +545,15 @@ class BS_net:
         # inizialize empty strainmap
         current_strainmap = np.zeros(self.X_norm.shape)
 
+        # update the Gaussian parameters if those are ROS params
+        if rospy.has_param('/pu/amplitude'):
+            self.all_params_gaussians = np.array([rospy.get_param('/pu/amplitude'),
+                                                  rospy.get_param('/pu/x0')/160,
+                                                  rospy.get_param('/pu/y0')/144,
+                                                  rospy.get_param('/pu/sigma_x')/160,
+                                                  rospy.get_param('/pu/sigma_y')/144,
+                                                  rospy.get_param('/pu/strain_offset')])
+
         # loop through all of the Gaussians, and obtain the strainmap values
         for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
 
@@ -612,6 +628,13 @@ class BS_net:
 
         # enable robot's reference trajectory publishing
         self.flag_pub_trajectory = True
+        
+        # check if there are ROS params about the ellipse
+        if rospy.has_param('/pu/amplitude'):
+            self.all_params_ellipses = np.array([rospy.get_param('/pu/x0'),
+                                                 rospy.get_param('/pu/y0'),
+                                                 rospy.get_param('/pu/sigma_x')**2,
+                                                 rospy.get_param('/pu/sigma_y')**2])
 
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)   # retrieve number of ellipses currently present in the map
 
@@ -758,6 +781,15 @@ class BS_net:
 
         current_strain = 0
 
+        # update the Gaussian parameters if those are ROS params
+        if rospy.has_param('/pu/amplitude'):
+            self.all_params_gaussians = np.array([rospy.get_param('/pu/amplitude'),
+                                                  rospy.get_param('/pu/x0')/160,
+                                                  rospy.get_param('/pu/y0')/144,
+                                                  rospy.get_param('/pu/sigma_x')/160,
+                                                  rospy.get_param('/pu/sigma_y')/144,
+                                                  rospy.get_param('/pu/strain_offset')])
+
         # loop through all of the Gaussians, to obtain the contribution of each of them
         # to the overall strain corresponding to the current position 
         for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
@@ -775,7 +807,7 @@ class BS_net:
             current_strain += amplitude * np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))+offset
         
         # check if the current strain is safe or risky
-        if current_strain <= self.risky_strain:
+        if current_strain <= rospy.get_param('/pu/strain_threshold'):
             # if the strain is sufficiently low, then we are safe: we set the parameters
             # for the cartesian impedance controller to produce minimal interaction force with the subject
             trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
@@ -835,7 +867,7 @@ class BS_net:
 
                 # # I came up with a simple heuristic, in which stiff - stiff_low =  3 x (damp - damp_low)
 
-                # ratio = (current_strain - self.risky_strain)**2 + 1         # we add + 1 to avoid having damping close to 0
+                # ratio = (current_strain - rospy.get_param('/pu/strain_threshold'))**2 + 1         # we add + 1 to avoid having damping close to 0
                 # damping  = ratio * self.ee_cart_damping_dampVel_baseline
 
                 # if damping[0] > self.max_cart_damp:
@@ -892,6 +924,13 @@ class BS_net:
 
         # disable robot's reference trajectory publishing
         self.flag_pub_trajectory = True
+
+        # check if there are ROS params about the ellipse
+        if rospy.has_param('/pu/amplitude'):
+            self.all_params_ellipses = np.array([rospy.get_param('/pu/x0'),
+                                                 rospy.get_param('/pu/y0'),
+                                                 rospy.get_param('/pu/sigma_x')**2,
+                                                 rospy.get_param('/pu/sigma_y')**2])
 
         # retrieve number of (elliptical) unsafe zones present on current strain map
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
@@ -1014,6 +1053,13 @@ class BS_net:
         # disable robot's reference trajectory publishing
         self.flag_pub_trajectory = True
 
+        # check if there are ROS params about the ellipse
+        if rospy.has_param('/pu/amplitude'):
+            self.all_params_ellipses = np.array([rospy.get_param('/pu/x0'),
+                                                 rospy.get_param('/pu/y0'),
+                                                 rospy.get_param('/pu/sigma_x')**2,
+                                                 rospy.get_param('/pu/sigma_y')**2])
+
         # retrieve number of (elliptical) unsafe zones present on current strain map
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
 
@@ -1072,34 +1118,38 @@ class BS_net:
             self.x_opt = initial_state.reshape((6,1))
         else:
             # if not, then we run a simple optimization problem to find the optimal trajectory to avoid the unsafe areas.
-            x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
+            try:
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
 
-            # note the order for reshape!
-            traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
-            self.x_opt = traj_opt
-            self.u_opt = None       # TODO: we are ignoring u_opt for now
+                # note the order for reshape!
+                traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
+                self.x_opt = traj_opt
+                self.u_opt = None       # TODO: we are ignoring u_opt for now
 
-            # increase stiffness to actually track the optimal deflected trajectory
-            # values of stiffness can be updated in real-time
-            trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
-            rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
-            rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
+                # increase stiffness to actually track the optimal deflected trajectory
+                # values of stiffness can be updated in real-time
+                trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+                rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+                rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
 
-            self.ee_cart_stiffness_cmd = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h,
-                                                   rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
-            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+                self.ee_cart_stiffness_cmd = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h,
+                                                    rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
+                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
-            # sleep for the duration of the optimized trajectory
-            rospy.sleep(self.nlps.T)
+                # sleep for the duration of the optimized trajectory
+                rospy.sleep(self.nlps.T)
 
-            # decrease stiffness again so that subject can continue their movement
-            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
-            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
-            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
-            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
-                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
-            
-            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+                # decrease stiffness again so that subject can continue their movement
+                trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+                rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+                rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+                self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                    rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+                
+                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+
+            except:
+                rospy.loginfo("Optimization failed, no valid trajectory found")
 
 
     def debug_sysDynamics(self):
@@ -1354,7 +1404,7 @@ if __name__ == '__main__':
 
         # initialize the biomechanics-safety net module
         bsn_module = BS_net(debug_mode, rate=200, simulation = simulation, speed_estimate=rospy.get_param('/pu/speed_estimate'))
-
+        
         params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
         params_ellipse_test = np.array([20, 90, 35**2, 25**2])
         
@@ -1443,8 +1493,12 @@ if __name__ == '__main__':
 
         # wait until the robot is requesting the optimized reference
         print("Waiting to start therapy")
-        while not bsn_module.keepRunning():
+        while not bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
             rospy.sleep(0.1)
+
+        if not rospy.get_param('/pu/execute_program'):
+            bsn_module.setReferenceToCurrentRefPose()   # hold pose and stop
+            bsn_module.strain_visualizer.quit()
 
         # countdown for the user to be ready
         print("Starting in...")
@@ -1458,7 +1512,7 @@ if __name__ == '__main__':
         # start to provide the safe reference as long as the robot is requesting it
         # we do so in a way that allows temporarily pausing the therapy
         while not rospy.is_shutdown():
-            if bsn_module.keepRunning():
+            if bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
 
                 if rospy.get_param('/pu/interaction_mode') == 0:        # mode = 0: keep current pose and wait
                     bsn_module.setReferenceToCurrentPose()
@@ -1471,14 +1525,25 @@ if __name__ == '__main__':
 
                 elif rospy.get_param('/pu/interaction_mode') == 3:
                     bsn_module.predict_future_state_simple(N = 10, T = 1)
-                    
+
+                else:
+                    bsn_module.ros_rate.sleep()
+
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.
-            if not bsn_module.keepRunning():
+            elif not bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
                 # overwrite the future references with the current one
-                    bsn_module.setReferenceToCurrentRefPose()   # to decrease bumps (as trajectory will be very smooth anyway)
+                bsn_module.setReferenceToCurrentRefPose()   # to decrease bumps (as trajectory will be very smooth anyway)
+                    
+                bsn_module.ros_rate.sleep()
 
-            bsn_module.ros_rate.sleep()
+            elif not rospy.get_param('/pu/execute_program') and bsn_module.strain_visualizer.is_running:
+                bsn_module.setReferenceToCurrentRefPose()   # to decrease bumps (as trajectory will be very smooth anyway)
+                bsn_module.strain_visualizer.quit()
+                bsn_module.ros_rate.sleep()
 
+            else:
+                bsn_module.ros_rate.sleep()
+            
     except rospy.ROSInterruptException:
         pass

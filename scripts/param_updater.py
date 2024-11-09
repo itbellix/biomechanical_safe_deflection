@@ -102,6 +102,15 @@ if __name__ == "__main__":
 
         position_gh_in_base = np.array([-0.2, 0.8, 0.6]) # position of the center of the shoulder frame (GH joint) in the base frame [m]
 
+    # definition of parameters for strain map and ellipses
+    x0 = 20                 # PE center in degrees
+    y0 = 90                 # SE center in degrees
+    sigma_x = 35            # standard deviation along PE in degrees
+    sigma_y = 25            # standard deviation along SE in degrees
+    amplitude = 4           # max strain at the top
+    strain_offset = 0       # constant offset to elevate strain-map
+    strain_threshold = 2    # strain threshold to define risky zones
+
     # initial state (referred explicitly to the position of the patient's GH joint) 
     # Therapy will start in this position - used to build the NLP structure, and to command first position of the robot
     # x = [pe, pe_dot, se, se_dot, ar, ar_dot], but note that ar and ar_dot are not tracked
@@ -183,6 +192,15 @@ if __name__ == "__main__":
 
     # define parameter for terminating execution
     rospy.set_param('/pu/execute_program', True)
+
+    # define parameters for the ellipse definition
+    rospy.set_param('/pu/x0', x0)
+    rospy.set_param('/pu/y0', y0)
+    rospy.set_param('/pu/sigma_x', sigma_x)
+    rospy.set_param('/pu/sigma_y', sigma_y)
+    rospy.set_param('/pu/amplitude', amplitude)
+    rospy.set_param('/pu/strain_offset', strain_offset)
+    rospy.set_param('/pu/strain_threshold', strain_threshold)
 
     # -------------------------------------------------------------------------------
     # names of the ROS topics on which the shared communication between biomechanical-based optimization 
