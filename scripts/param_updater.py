@@ -30,7 +30,11 @@ def callback(config, level):
     rospy.loginfo("""l_arm: {l_arm},
                   p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}],
                   high cart stiff:[{ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_z_h}],
-                  mode:{interaction_mode}, task:{task}, execute:{execute_program}""".format(**config))
+                  low cart stiff:[{ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_z_l}],
+                  increase damping by x {damp_ratio},
+                  mode:{interaction_mode}, 
+                  task:{task}, 
+                  execute:{execute_program}""".format(**config))
     return config
 
 if __name__ == "__main__":
@@ -120,9 +124,11 @@ if __name__ == "__main__":
     ee_rot_stiff_z_h = 4 
 
     # control parameters for when the user moves around safely (low stiffness, damping will be 2*srqt(...))
-    ee_trans_stiff_l = 400
-    ee_rot_stiff_xy_l = 15
-    ee_rot_stiff_z_l = 4 
+    ee_trans_stiff_l = 20
+    ee_rot_stiff_xy_l = 5
+    ee_rot_stiff_z_l = 1 
+    # ratio to modify damping wrt critical one (for low stiffnesses)
+    damp_ratio = 2
 
     # option to change these only in simulation
     ns_elb_stiffness_sim = ns_elb_stiffness
@@ -166,6 +172,8 @@ if __name__ == "__main__":
     rospy.set_param('/pu/ee_trans_stiff_l', ee_trans_stiff_l)
     rospy.set_param('/pu/ee_rot_stiff_xy_l', ee_rot_stiff_xy_l)
     rospy.set_param('/pu/ee_rot_stiff_z_l', ee_rot_stiff_z_l)
+    # ratio to increase damping in certain directions
+    rospy.set_param('/pu/damp_ratio', damp_ratio)
 
     # define the parameters for the interaction mode
     rospy.set_param('/pu/interaction_mode', 0)

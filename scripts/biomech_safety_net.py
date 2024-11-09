@@ -102,23 +102,31 @@ class BS_net:
         self.ee_cart_damping_cmd = None         # damping value sent to the Cartesian impedance controller
 
         # CIC parameters
-        trans_stiff = rospy.get_param('/pu/ee_trans_stiff_h')
-        rot_stiff_xy = rospy.get_param('/pu/ee_rot_stiff_xy_h')
-        rot_stiff_z = rospy.get_param('/pu/ee_rot_stiff_z_h')
-        self.ee_cart_stiffness_default = np.array([trans_stiff, trans_stiff, trans_stiff,
-                                                   rot_stiff_xy, rot_stiff_xy, rot_stiff_z]).reshape((6,1))
-        
+        # (default, high cartesian stiffness and damping)
+        trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+        rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+        rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
+        self.ee_cart_stiffness_default = np.array([trans_stiff_h, trans_stiff_h, trans_stiff_h,
+                                                   rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
         self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
 
-        self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
+        # (low cartesian stiffness and damping)
+        trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+        rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+        rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+        self.ee_cart_stiffness_low = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                               rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
         self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
 
-        self.ee_cart_damping_dampVel_baseline = np.array([35, 35, 35, 10, 10, 1]).reshape((6,1))
+        # self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
+        # self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
 
-        self.ee_cart_stiffness_dampVel_fixed = np.array([100, 100, 100, 5, 5, 1]).reshape((6,1))
-        self.ee_cart_damping_dampVel_fixed = np.array([80, 80, 80, 10, 10, 1]).reshape((6,1))
+        # self.ee_cart_damping_dampVel_baseline = np.array([35, 35, 35, 10, 10, 1]).reshape((6,1))
 
-        self.max_cart_damp = 70                # max value of linear damping allowed
+        # self.ee_cart_stiffness_dampVel_fixed = np.array([100, 100, 100, 5, 5, 1]).reshape((6,1))
+        # self.ee_cart_damping_dampVel_fixed = np.array([80, 80, 80, 10, 10, 1]).reshape((6,1))
+
+        # self.max_cart_damp = 70                # max value of linear damping allowed
 
 
         # filter the reference that is generated, to avoid noise injection from the human-pose estimator
@@ -642,8 +650,13 @@ class BS_net:
 
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
         else:
             # otherwise check all of the zones in which we are in, and find the closest points
@@ -765,8 +778,13 @@ class BS_net:
         if current_strain <= self.risky_strain:
             # if the strain is sufficiently low, then we are safe: we set the parameters
             # for the cartesian impedance controller to produce minimal interaction force with the subject
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
         else:
             # if we are in a risky area, then rapid movement should be limited if it would lead to
@@ -803,8 +821,13 @@ class BS_net:
 
             # if the directional derivative is negative, then movement is safe (we set low damping)
             if dStrain_along_direction < 0:
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+                rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+                rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+                self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                    rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+                
+                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             else:
                 # # here we will change the damping of the interaction. However, we cannot do this without 
@@ -823,8 +846,17 @@ class BS_net:
                 # self.ee_cart_stiffness_cmd = 3 * (self.ee_cart_damping_cmd[0] - self.ee_cart_damping_low[0]) * self.ee_cart_stiffness_low
                 # print(self.ee_cart_damping_cmd[0])
                 
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_dampVel_fixed
-                self.ee_cart_damping_cmd = self.ee_cart_damping_dampVel_fixed
+                # if the directional derivative is positive, then we have to increase the damping
+                # now this is manually set to be twice the critical damping -> TODO: check that it works
+                trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+                rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+                rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+                self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                    rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+                
+                damping_ratio = rospy.get_param('/pu/damp_ratio')
+                critical_damping = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+                self.ee_cart_damping_cmd = damping_ratio * critical_damping
             
 
         # the current position is set as a reference
@@ -922,8 +954,13 @@ class BS_net:
             # if there is no future state which is unsafe, the current position is tracked
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             self.x_opt = initial_state.reshape((6,1))
         else:
@@ -958,8 +995,13 @@ class BS_net:
             rospy.sleep(self.nlps.T)
 
             # decrease stiffness again so that subject can continue their movement
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
 
     def predict_future_state_simple(self, N, T):
@@ -1019,8 +1061,13 @@ class BS_net:
             # if there is no future state which is unsafe, the current position is tracked
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             self.x_opt = initial_state.reshape((6,1))
         else:
@@ -1046,8 +1093,13 @@ class BS_net:
             rospy.sleep(self.nlps.T)
 
             # decrease stiffness again so that subject can continue their movement
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+            rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+            rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+            self.ee_cart_stiffness_cmd = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
 
     def debug_sysDynamics(self):
