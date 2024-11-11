@@ -517,7 +517,7 @@ class BS_net:
         the computations/publishing to be performed, such that this happens only if the robot controller needs it.
         """
         # frequency of discretization of the future human movement is used
-        if self.interaction_mode == 3:
+        if self.interaction_mode == 2:
             # if we are using the solution from the NLPS, then be coherent with the discretization
             rate = rospy.Rate(1/self.nlps.h)
         else:
@@ -659,18 +659,21 @@ class BS_net:
         """
 
         return (x-px)**2 + (np.sqrt(b_squared* (1 - x**2/a_squared)) - py)**2
-        
+
 
     def monitor_unsafe_zones(self):
         """
-        This function monitors whether we are in any unsafe zones, based on the ellipse parameters
-        obtained by the analytical expression of the strainmaps. In particular:
-            - if we are outside of all the ellipses, the reference point (in the human frame)
-              is set to be the current pose
-            - if we are inside one (or more) ellipses, the reference point is the closest point
-              on the ellipses borders.
-        The corresponding human pose is commanded to the robot, transforming it into EE pose.
-
+        This function monitors the movement of the subject based on the strain maps and the
+        current state of the subject. In particular:
+        - if the subject state corresponds to low strain, low stiffness and damping are used, 
+          and the reference point is the current (human) state
+        - if the current strain level exceeds a "risky" value, then we check in which direction the
+          human is moving. If:
+            - movement happens towards lower-strain areas, low stiffness and damping are used, 
+            and the reference point is the current (human) state
+            - movement happens towards higher-strain areas, damping is increased (with reference velocity=0)
+        - if the current pose is within an unsafe zone, the reference point is set to the closest point
+          on the border of the zone.
 
         The ellipses are defined with model's angles in degrees!
         """
@@ -682,9 +685,14 @@ class BS_net:
 
         # retrieve the current point on the strain map
         # remember that the ellipses are defined in degrees!
+        # retrieve model's current pose and velocity
+        # remember that the strain map is defined in degrees
         pe = np.rad2deg(self.state_values_current[0])
+        pe_dot = np.rad2deg(self.state_values_current[1])
         se = np.rad2deg(self.state_values_current[2])
+        se_dot = np.rad2deg(self.state_values_current[3])
         ar = np.rad2deg(self.state_values_current[4])
+        ar_dot = np.rad2deg(self.state_values_current[5])
 
         # check if (pe, se) is inside any unsafe zone
         self.in_zone_i = np.zeros(num_ellipses)
@@ -708,18 +716,8 @@ class BS_net:
         # now we know if we are inside one (or more ellipses). Given the current shoulder pose (pe, se), we find 
         # the closest point on the surface of the ellipses containing (pe, se).
         num_in_zone = int(self.in_zone_i.sum())
-        if num_in_zone == 0:
-            # if we are not inside any ellipse, then we are safe and the current position is tracked
-            # (we convert back to radians for compatibility with the rest of the code)
-            self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
-
-            # choose Cartesian stiffness and damping for the robot's impedance controller
-            # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low 
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
-
-        else:
-            # otherwise check all of the zones in which we are in, and find the closest points
+        if num_in_zone > 0:
+            # if we are inside an unsafe zone, we need to find the closest reference point.
             closest_point = np.nan * np.ones((num_ellipses, 2))
 
             # loop through the ellipses
@@ -766,25 +764,12 @@ class BS_net:
 
                     closest_point[i,:] = np.array([pe_cp, se_cp])
 
-            # extract only the relevant rows from closest_point, retaining the point(s)
-            # on each ellipse that we can consider as a reference
-            closest_point = closest_point[~np.isnan(closest_point).all(axis=1)]
-
-            # check if we are inside multiple ellipses. If so, check which point is really the closest
-            num_points = closest_point.shape[1]>1
-            if num_points:
-                curr_closest_point = closest_point[0, :]
-                curr_d = (curr_closest_point[0]-pe)**2 + (curr_closest_point[1]-se)**2
-
-                for i in range(1, num_points):
-                    new_d = (closest_point[i,0]-pe)**2 + (closest_point[i,1]-se)**2
-                    if new_d < curr_d:
-                        curr_d = new_d
-                        curr_closest_point = closest_point[i, :]
+            # extract only the relevant rows from closest_point, retaining the point that we can consider as a reference
+            closest_point = closest_point[~np.isnan(closest_point).all(axis=1)][0]
 
             # send the closest point on the ellipse border as a reference for the robot
             # we need to reconvert back to radians for compatibility with the rest of the code
-            self.x_opt = np.deg2rad(np.array([curr_closest_point[0], 0, curr_closest_point[1], 0, ar, 0]).reshape((6,1)))
+            self.x_opt = np.deg2rad(np.array([closest_point[0], 0, closest_point[1], 0, ar, 0]).reshape((6,1)))
 
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # these values can be adjusted by the user to explore different modalities of HRI
@@ -792,67 +777,17 @@ class BS_net:
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
-
-    def damp_unsafe_velocities(self):
-        """
-        This function takes care of increasing the damping of the cartesian impedance controller
-        when the subject is traversing high-strain areas.
-        Ideally, damping should be increased if the movement will result in increased strain, and
-        kept low when the movement is "escaping" unsafe areas.
-        """
-        # enable robot's reference trajectory publishing
-        self.flag_pub_trajectory = True
-
-        # retrieve model's current pose and velocity
-        # remember that the strain map is defined in degrees
-        pe = np.rad2deg(self.state_values_current[0])
-        pe_dot = np.rad2deg(self.state_values_current[1])
-        se = np.rad2deg(self.state_values_current[2])
-        se_dot = np.rad2deg(self.state_values_current[3])
-        ar = np.rad2deg(self.state_values_current[4])
-        ar_dot = np.rad2deg(self.state_values_current[5])
-
-        current_strain = 0
-
-        # loop through all of the Gaussians, to obtain the contribution of each of them
-        # to the overall strain corresponding to the current position 
-        for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
-
-            #first, retrieve explicitly the parameters of the function considered in this iteration
-            amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
-            x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
-            y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
-            sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
-            sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
-            offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
-            
-            # then, compute the contribution of this particular Gaussian to the final strainmap
-            # (remember that the strain maps are computed with normalized values!)
-            current_strain += amplitude * np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))+offset
-        
-        # check if the current strain is safe or risky
-        if current_strain <= self.strain_threshold:
-            # if the strain is sufficiently low, then we are safe: we set the parameters
-            # for the cartesian impedance controller to produce minimal interaction force with the subject
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
-
         else:
-            # if we are in a risky area, then rapid movement should be limited if it would lead to
-            # increased strain. For this, we calculate the directional derivative of the strain map
-            # at the current location, along the direction given by the current (estimated) velocity.
-            # If the directional derivative is negative, then the movement is still safe. Otherwise,
-            # damping from the robot should be added.
+            # if we are not inside any zones, we should check how much strain corresponds to the current human state
+            # NOTE: if we consider more complex zones, this might not be enough, and we probably need also a metric
+            # accounting for the distance to the closest zone.
 
-            # calculate the directional vector from the estimated velocities
-            vel_on_map = np.array([pe_dot, se_dot]) 
-            norm_vel = vel_on_map / np.linalg.norm(vel_on_map + 1e-6)
+            current_strain = 0
 
-            # calculate the directional derivative on the strain map
-            dStrain_dx = 0
-            dStrain_dy = 0
+            # loop through all of the Gaussians, to obtain the contribution of each of them
+            # to the overall strain corresponding to the current position 
             for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+
                 #first, retrieve explicitly the parameters of the function considered in this iteration
                 amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
                 x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
@@ -860,34 +795,66 @@ class BS_net:
                 sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
                 sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
                 offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
-
-                # then, compute the analytical (partial) derivatives of the strain map and add them
-                dStrain_dx += - amplitude * (pe/self.pe_normalizer - x0) / (sigma_x**2) * \
-                              np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
                 
-                dStrain_dy += - amplitude * (se/self.se_normalizer - y0) / (sigma_y**2) * \
-                              np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
-                
-            
-            dStrain_along_direction = np.dot(np.array([dStrain_dx, dStrain_dy]), norm_vel)
+                # then, compute the contribution of this particular Gaussian to the final strainmap
+                # (remember that the strain maps are computed with normalized values!)
+                current_strain += amplitude * np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))+offset
 
-            # if the directional derivative is negative, then movement is safe (we set low damping)
-            if dStrain_along_direction < 0:
+            if current_strain<=self.strain_threshold:
+                # if the strain is sufficiently low, then we are safe: we set the parameters
+                # for the cartesian impedance controller to produce minimal interaction force with the subject
                 self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
                 self.ee_cart_damping_cmd = self.ee_cart_damping_low
 
-            else:
-                # if the directional derivative is positive, then we have to increase the damping
-                # Experimentally, damping is adjusted only for the translational part of the controller
-                # This is manually set to be twice the critical damping
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                self.ee_cart_damping_cmd = np.concatenate((self.damping_ratio_deflection * self.ee_cart_damping_low[0:3],
-                                                          self.ee_cart_damping_low[3:])).reshape((6,1))
-            
+                self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
-        # the current position is set as a reference
-        # (we convert back to radians for compatibility with the rest of the code)
-        self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
+            else:
+                # if we are in a risky area, then rapid movement should be limited if it would lead to
+                # increased strain. For this, we calculate the directional derivative of the strain map
+                # at the current location, along the direction given by the current (estimated) velocity.
+                # If the directional derivative is negative, then the movement is still safe. Otherwise,
+                # damping from the robot should be added.
+
+                # calculate the directional vector from the estimated velocities
+                vel_on_map = np.array([pe_dot, se_dot]) 
+                norm_vel = vel_on_map / np.linalg.norm(vel_on_map + 1e-6)
+
+                # calculate the directional derivative on the strain map
+                dStrain_dx = 0
+                dStrain_dy = 0
+                for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+                    #first, retrieve explicitly the parameters of the function considered in this iteration
+                    amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
+                    x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
+                    y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
+                    sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
+                    sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
+                    offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
+
+                    # then, compute the analytical (partial) derivatives of the strain map and add them
+                    dStrain_dx += - amplitude * (pe/self.pe_normalizer - x0) / (sigma_x**2) * \
+                                np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
+                    
+                    dStrain_dy += - amplitude * (se/self.se_normalizer - y0) / (sigma_y**2) * \
+                                np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
+                    
+                
+                dStrain_along_direction = np.dot(np.array([dStrain_dx, dStrain_dy]), norm_vel)
+
+                # if the directional derivative is negative, then movement is safe (we set low damping)
+                if dStrain_along_direction < 0:
+                    self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                    self.ee_cart_damping_cmd = self.ee_cart_damping_low
+
+                else:
+                    # if the directional derivative is positive, then we have to increase the damping
+                    # Experimentally, damping is adjusted only for the translational part of the controller
+                    # This is manually set to be twice the critical damping
+                    self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                    self.ee_cart_damping_cmd = np.concatenate((self.damping_ratio_deflection * self.ee_cart_damping_low[0:3],
+                                                            self.ee_cart_damping_low[3:])).reshape((6,1))
+
+                self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
 
     def assign_nlps(self, nlps_object):
@@ -1468,13 +1435,10 @@ if __name__ == '__main__':
                 if bsn_module.interaction_mode == 0:        # mode = 0: keep current pose and wait
                     bsn_module.setReferenceToCurrentPose()
 
-                elif bsn_module.interaction_mode == 1:      # mode = 1: monitor unsafe zones
+                elif bsn_module.interaction_mode == 1:      # mode = 1: monitor movement with strain maps and unsafe zones
                     bsn_module.monitor_unsafe_zones()
                     
-                elif bsn_module.interaction_mode == 2:      # mode = 2: damp velocities in unsafe areas
-                    bsn_module.damp_unsafe_velocities()
-
-                elif bsn_module.interaction_mode == 3:
+                elif bsn_module.interaction_mode == 2:      # mode = 2: actively deflect subject based on movement prediction
                     bsn_module.predict_future_state_simple(N = 10, T = 1)
 
                 else:
