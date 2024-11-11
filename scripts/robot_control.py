@@ -39,9 +39,6 @@ import dynamic_reconfigure.client
 # import parser
 import argparse
 
-# import the parameters for the experiment as defined in experiment_parameters.py
-from experiment_parameters import *
-
 class RobotControlModule:
     """
     This class implements the robot control
@@ -81,6 +78,23 @@ class RobotControlModule:
         self.client.wait_for_server()       # necessary the first time to establish communication properly
         self.client.send_goal(goal)         # this will allow us to set what we want in the rest of the code
         self.client.wait_for_result()
+        
+        # define the parameters that will be used to store information about the robot status and state estimation
+        self.ee_pose_curr = None            # EE current pose
+        self.ee_desired_pose = None         # EE desired pose
+        self.ee_twist_curr = None           # EE current twist (linear and angular velocity in robot base frame)
+        self.desired_pose_reached = None    # the end effector has effectively reached the desired point
+        self.initial_pose_reached = False   # one-time flag to be adjusted when the robot reaches the required
+                                            # starting point. When set to true, the estimated shoulder state are meaningful
+
+
+        # define parameters for the filtering of the human state estimation
+        self.alpha_p = 0.9                  # weight of the exponential moving average filter (position part)
+        self.alpha_v = 0.9                  # weight of the exponential moving average filter (velocity part)
+        self.human_pose_estimated = np.zeros(12)    # contains q, q_dot, q_ddot, and position_gh_center_in_base (all are 3D vecs)
+        self.last_timestamp = 0
+        self.filter_initialized = False     # whether the filter applied on the human pose estimation has
+                                            # already been initialized
 
         # define a ROS subscriber to have access to the cartesian pose of the EE if needed
         self.sub_to_cartesian_pose = rospy.Subscriber(self.ns+'/'+self.cartesian_pose_publisher.topic,  # name of the topic to subscribe to
@@ -99,23 +113,6 @@ class RobotControlModule:
                                                        Float64MultiArray,
                                                        self._callback_ee_ref_pose,
                                                        queue_size=1)
-        
-        # define the parameters that will be used to store information about the robot status and state estimation
-        self.ee_pose_curr = None            # EE current pose
-        self.ee_desired_pose = None         # EE desired pose
-        self.ee_twist_curr = None           # EE current twist (linear and angular velocity in robot base frame)
-        self.desired_pose_reached = None    # the end effector has effectively reached the desired point
-        self.initial_pose_reached = False   # one-time flag to be adjusted when the robot reaches the required
-                                            # starting point. When set to true, the estimated shoulder state are meaningful
-
-
-        # define parameters for the filtering of the human state estimation
-        self.alpha_p = 0.9                  # weight of the exponential moving average filter (position part)
-        self.alpha_v = 0.9                  # weight of the exponential moving average filter (velocity part)
-        self.human_pose_estimated = np.zeros(12)    # contains q, q_dot, q_ddot, and position_gh_center_in_base (all are 3D vecs)
-        self.last_timestamp = 0
-        self.filter_initialized = False     # whether the filter applied on the human pose estimation has
-                                            # already been initialized
         
         # set up a publisher and its thread for publishing continuously whether the robot is tracking the 
         # optimal trajectory or not
@@ -581,9 +578,17 @@ if __name__ == "__main__":
     try:
         # check if we are running in simulation or not
         parser = argparse.ArgumentParser(description="Script that controls our Kuka robot")
-        parser.add_argument("--simulation", required=True, type=str)
-        args = parser.parse_args()
-        simulation = args.simulation
+        parser.add_argument("--simulation", type=str, help="Run in simulation mode")
+        args, unknown = parser.parse_known_args()
+
+        # Check if "simulation" was passed as a command-line argument
+        if args.simulation:
+            simulation = args.simulation
+            rospy.loginfo(f"RobotControlModule: starting with command-line argument: simulation={simulation}")
+        else:
+            # Fallback to ROS parameter if not provided as an argument
+            simulation = rospy.get_param("~simulation", "false")
+            rospy.loginfo(f"RobotControlModule: running with ROS parameter: simulation={simulation}")
 
         # define real-time factor if we are in simulation or not
         if simulation == 'true':
@@ -591,8 +596,8 @@ if __name__ == "__main__":
         else:
             rt_factor = 1
 
-        print("Running with simulation settings: ", simulation)
-        print("real time factor: ", rt_factor)
+        print("RobotControlModule: running with simulation settings: ", simulation)
+        print("RobotControlModule: real time factor: ", rt_factor)
 
         # initialize ros node and set desired rate (imported above as a parameter)
         rospy.init_node("robot_control_module")
@@ -601,24 +606,24 @@ if __name__ == "__main__":
         # flag that determines if the robotic therapy should keep going
         ongoing_therapy = True
 
-        # instantiate a RobotControlModule with the correct shared ros topics (coming from experiment_parameters.py)
+        # instantiate a RobotControlModule with the correct shared ros topics (coming from the ROS parameter server)
         control_module = RobotControlModule()
 
-        print("control module instantiated")
+        print("RobotControlModule: control module instantiated")
         # set the robot in the homing pose, to always start from there
         homing_time = 5/rt_factor             # [s] time required to complete homing
-        print("Initiating homing")
+        print("RobotControlModule: Initiating homing")
         control_module.goHoming(homing_time)
-        print("Completed homing")
+        print("RobotControlModule: Completed homing")
 
-        print("start publishing current EE pose")
+        print("RobotControlModule: start publishing current EE pose")
         
         # the last ControlGoal to be sent is the one inside goHoming() -> it is the reference_tracker
         # here we change the execution time, and then send it to the togglePublishingEEPose so that the
         # same control mode, stiffness, damping and reference are maintained
         control_module.reference_tracker.time = 1/rt_factor
         control_module.togglePublishingEEPose(True, control_module.reference_tracker)
-        print("Current pose is being published")
+        print("RobotControlModule: Current pose is being published")
 
         # initialize last task that has been executed (none for now)
         last_task = 0
@@ -634,7 +639,7 @@ if __name__ == "__main__":
                     # update last task
                     last_task = 1
                     if control_module.getEEDesiredPose() is None:         # be sure that we know where to go
-                        print("waiting for initial pose to be known")
+                        print("RobotControlModule: waiting for initial pose to be known")
                         while control_module.getEEDesiredPose() is None:
                             ros_rate.sleep()
                     
@@ -645,7 +650,7 @@ if __name__ == "__main__":
                     stiffness = np.array([300, 300, 300, 10, 10, 2])
                     damping = np.sqrt(stiffness)             # decrease damping to increase stability
 
-                    print("moving to initial position")
+                    print("RobotControlModule: moving to initial position")
                     control_module.moveToEEDesiredPose(duration_movement, rate, precision, stiffness, damping)
 
                     if control_module.desired_pose_reached:
@@ -675,13 +680,13 @@ if __name__ == "__main__":
 
                         # set the flag for indicating completion, and inform the user
                         control_module.initial_pose_reached = True
-                        print("Reached initial position. Starting to publish on topic %s (order data is [pe, se, ar])" % control_module.topic_shoulder_pose)
+                        print("RobotControlModule: reached initial position. Starting to publish on topic %s (order data is [pe, se, ar])" % control_module.topic_shoulder_pose)
                         print("-----------------------------------------------")
-                        print("Therapy can start")
+                        print("RobotControlModule: therapy can start")
                         print("-----------------------------------------------")
 
                     else:
-                        print("Initial position could not be reached... Try again!")
+                        print("RobotControlModule: initial position could not be reached... Try again!")
 
                 # start the therapy
                 if last_task!=task_to_execute and task_to_execute==2:
@@ -708,17 +713,17 @@ if __name__ == "__main__":
 
                         control_module.client.send_goal(control_module.reference_tracker)
                         control_module.client.wait_for_result()
-                        print("Start to follow optimal reference")
+                        print("RobotControlModule: start to follow optimal reference")
                         topic = rospy.get_param('/rostopic/cartesian_ref_ee')
                         control_module.trackReferenceOnTopic('/'+topic, True)
                     else:
-                        print("Robot is not in the initial pose yet. Doing nothing.")
+                        print("RobotControlModule: robot is not in the initial pose yet. Doing nothing.")
 
                 # pause the therapy
                 if last_task!=task_to_execute and task_to_execute==3:
                     #update last task
                     last_task = 3
-                    print("Pause trajectory generation")
+                    print("RobotControlModule: pause trajectory generation")
                     topic = rospy.get_param('/rostopic/cartesian_ref_ee')
                     control_module.trackReferenceOnTopic('/'+topic, False)
 
@@ -727,13 +732,13 @@ if __name__ == "__main__":
                     #update last task
                     last_task = 4
 
-                    print("Zero stiffness/damping in 5 seconds")
+                    print("RobotControlModule: zero stiffness/damping in 5 seconds")
                     time.sleep(2)
-                    print("3")
+                    print("RobotControlModule: 3")
                     time.sleep(1)
-                    print("2")
+                    print("RobotControlModule: 2")
                     time.sleep(1)
-                    print("1")
+                    print("RobotControlModule: 1")
                     time.sleep(1)
 
                     # switch to zero stiffness and damping
@@ -746,14 +751,14 @@ if __name__ == "__main__":
                     control_module.test_publish_cartesian(ref, time_movement, stiffness, damping, nullspace_gain, nullspace_reference)
                     
                     #confirm that everything went smoothly
-                    print("Free movement possible")
+                    print("RobotControlModule: free movement possible")
 
                 # test something
                 if last_task!=task_to_execute and task_to_execute==5:
                     # update last task
                     last_task = 5
 
-                    print("Moving to initial pose for testing")
+                    print("RobotControlModule: moving to initial pose for testing")
                     # TEST: send a fixed goal to move to a known position, then start sending a trajectory reference 
                     # to see if we can do it properly
                     cartesian_0 = np.array([-0.4, 0, 0.6])
@@ -767,7 +772,7 @@ if __name__ == "__main__":
                     control_module.test_publish_cartesian(ref, time_movement)
 
                     # now, enable elbow 
-                    input("\nPress any key to turn elbow on")
+                    input("\nRobotControlModule: press any key to turn elbow on")
                     control_module.reference_tracker.mode = 'elbow'
                     control_module.reference_tracker.reference = np.array([0.0, 0.0, 0.55])
                     control_module.reference_tracker.flag = True
@@ -775,7 +780,7 @@ if __name__ == "__main__":
                     control_module.client.send_goal(control_module.reference_tracker)
                     result = control_module.client.wait_for_result()
 
-                    input("Press any key to move ee to new position")
+                    input("RobotControlModule: press any key to move ee to new position")
                     cartesian_0 = np.array([-0.6, 0, 0.7])
 
                     euler_0 = np.array([0, 0, 0])
@@ -785,7 +790,7 @@ if __name__ == "__main__":
 
                     control_module.test_publish_cartesian(ref, time_movement)
 
-                    print("Done")
+                    print("RobotControlModule: done")
 
                 else:
                     # to allow ROS to execute other tasks if needed
@@ -793,7 +798,7 @@ if __name__ == "__main__":
 
             # if necessary, quit the execution, and freeze the robot to the current pose
             else:
-                print("shutting down - freezing to current position")
+                print("RobotControlModule: shutting down - freezing to current position")
                 control_module.stop()
 
                 # adjust flag for termination

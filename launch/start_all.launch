@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+
+<launch>
+
+    <!-- Define simulation argument with a default (optional) -->
+    <arg name="simulation" default="true"/>
+
+    <!-- Node for param_updater.py with argument update=true -->
+    <node
+        name="pu"
+        pkg="biomechanical_safe_deflection"
+        type="param_updater.py"
+        output="screen">
+        <param name="update" value="true" />
+    </node>
+
+    <!-- Node for robot_control.py with argument simulation=true -->
+    <node
+        name="robot_control"
+        pkg="biomechanical_safe_deflection"
+        type="robot_control.py"
+        output="screen"
+        args="--simulation $(arg simulation)"
+    />
+
+    <!-- Node for biomech_safety_net.py with argument simulation=true -->
+    <node
+        name="biomech_safety_net"
+        pkg="biomechanical_safe_deflection"
+        type="biomech_safety_net.py"
+        output="screen"
+        args="--simulation $(arg simulation)"
+    />
+
+    <!-- Node for rqt_gui with -s reconfigure -->
+    <node
+        name="rqt_gui"
+        pkg="rqt_gui"
+        type="rqt_gui"
+        args="-s reconfigure"
+        output="screen" 
+    />
+
+</launch>

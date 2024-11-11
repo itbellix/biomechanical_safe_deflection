@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 """
 This file stores the parameters for the experimental setups
 It contains information that should be available both to TO_main.py 
@@ -38,14 +36,22 @@ def callback(config, level):
     return config
 
 if __name__ == "__main__":
+    
+    # initialize the pu (parameter updater)
+    rospy.init_node("pu", anonymous = False)
 
     # check if we are going to allow online parameter updates or not
     parser = argparse.ArgumentParser(description="Script that initializes ROS parameters")
-    parser.add_argument("--update", required=True, type=str)
-    args = parser.parse_args()
-    allow_update = args.update
-
-    rospy.init_node("pu", anonymous = False)    # initialize the pu (parameter updater)
+    parser.add_argument("--update", type=str, help="Allow online parameter updates")
+    args, unknown = parser.parse_known_args()
+    
+    if args.update:
+        update = args.update
+        rospy.loginfo(f"ParamUpdater: running with command-line argument: updatable={update }")
+    else:
+        # Fallback to ROS parameter if not provided as an argument
+        update = rospy.get_param("~update", "false")
+        rospy.loginfo(f"ParamUpdater: running with ROS parameter: updatable={update}")
     
     # First, let's set all of the parameters that we will need. Only some of them are defined as
     # modifiable by the BSDConfig.
@@ -215,7 +221,7 @@ if __name__ == "__main__":
 
     print("Parameters have been initialized correctly")
 
-    if allow_update == 'false':
+    if update == 'false':
         print("Cannot modify them during execution")
     else:
         srv = Server(ParameterUpdateConfig, callback)

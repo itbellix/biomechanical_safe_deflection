@@ -16,10 +16,10 @@ import dynamic_reconfigure.client
 import argparse
 
 # import the strain visualizer
-import realTime_strainMap_visualizer as sv
+from biomechanical_safe_deflection.realTime_strainMap_visualizer import RealTimeStrainMapVisualizer
 
 # import the nlps_module
-import nlps_module as nlps
+from biomechanical_safe_deflection.nlps_module import nlps_module
 
 class BS_net:
     """
@@ -142,7 +142,7 @@ class BS_net:
         self.filter_initialized = False             # has the filter been initialized already?
 
         # initialize the visualization module for the strain maps
-        self.strain_visualizer = sv.RealTimeStrainMapVisualizer(self.X_norm, self.Y_norm, self.num_params_gaussian, self.pe_boundaries, self.se_boundaries)
+        self.strain_visualizer = RealTimeStrainMapVisualizer(self.X_norm, self.Y_norm, self.num_params_gaussian, self.pe_boundaries, self.se_boundaries)
 
         # initialize the NLP on strain maps, together with the equivalent CasADi function and the input it requires
         self.nlps = None
@@ -1305,11 +1305,19 @@ class BS_net:
 
 if __name__ == '__main__':
     try:
-        # check if we are running in simulation or not
+        # Set up argparse to handle command-line arguments
         parser = argparse.ArgumentParser(description="Script that runs the Bio-aware safety net")
-        parser.add_argument("--simulation", required=True, type=str)
-        args = parser.parse_args()
-        simulation = args.simulation
+        parser.add_argument("--simulation", type=str, help="Run in simulation mode")
+        args, unknown = parser.parse_known_args()
+
+        # Check if "simulation" was passed as a command-line argument
+        if args.simulation:
+            simulation = args.simulation
+            rospy.loginfo(f"BS_net: starting with command-line argument: simulation={simulation}")
+        else:
+            # Fallback to ROS parameter if not provided as an argument
+            simulation = rospy.get_param("~simulation", "false")
+            rospy.loginfo(f"BS_net: running with ROS parameter: simulation={simulation}")
 
         # define the required paths
         code_path = os.path.dirname(os.path.realpath(__file__))     # getting path to where this script resides
@@ -1333,7 +1341,7 @@ if __name__ == '__main__':
         opensimAD_ID = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_ID.casadi'))
         opensimAD_FD = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_FD.casadi'))
 
-        nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
+        nlps_instance = nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
 
         nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
 
@@ -1410,7 +1418,7 @@ if __name__ == '__main__':
         bsn_module.waitForShoulderState()
 
         # wait until the robot is requesting the optimized reference
-        print("Waiting to start therapy")
+        print("BS_net: Waiting to start therapy")
         while not bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
             rospy.sleep(0.1)
 
@@ -1419,12 +1427,12 @@ if __name__ == '__main__':
             bsn_module.strain_visualizer.quit()
 
         # countdown for the user to be ready
-        print("Starting in...")
-        print("3")
+        print("BS_net: Starting in...")
+        print("BS_net: 3")
         time.sleep(1)
-        print("2")
+        print("BS_net: 2")
         time.sleep(1)
-        print("1")
+        print("BS_net: 1")
         time.sleep(1)
 
         # start to provide the safe reference as long as the robot is requesting it
