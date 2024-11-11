@@ -27,14 +27,14 @@ def callback(config, level):
     the modifications are accessible to other nodes too. This is done specifically
     with the return command. Before, we can print something to make the user happy!
     """
-    rospy.loginfo("""l_arm: {l_arm},
-                  p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}],
-                  high cart stiff:[{ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_z_h}],
-                  low cart stiff:[{ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_z_l}],
-                  increase damping by x {damp_ratio},
-                  mode:{interaction_mode}, 
-                  task:{task}, 
-                  execute:{execute_program}""".format(**config))
+    # rospy.loginfo("""l_arm: {l_arm},
+    #               p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}],
+    #               high cart stiff:[{ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_z_h}],
+    #               low cart stiff:[{ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_z_l}],
+    #               increase damping by x {damp_ratio},
+    #               mode:{interaction_mode}, 
+    #               task:{task}, 
+    #               execute:{execute_program}""".format(**config))
     return config
 
 if __name__ == "__main__":

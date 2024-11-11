@@ -33,6 +33,9 @@ import tkinter as tk
 # import threading for testing
 import threading
 
+# import dynamic_reconfigure to update parameters on the fly
+import dynamic_reconfigure.client
+
 # import parser
 import argparse
 
@@ -50,8 +53,12 @@ class RobotControlModule:
         # get the name of the robot that we are working with
         self.ns = rospy.get_param('/namespaces')
 
-        # define the ros client - "/cor_tud/torque_controller" is defined on the "bringup" file
+        # define the ros client for the torque controller - "/cor_tud/torque_controller" is defined on the "bringup" file
         self.client = actionlib.SimpleActionClient(self.ns+'/torque_controller', ControllerAction)
+
+        # create a dynamic_reconfigure client to update parameters when they change (from the Parameter Updater node '/pu')
+        dynamic_reconfigure.client.Client("pu", timeout=None, config_callback=self.callback_dyn_rec)
+        # parameters that can be modified at execution time are the ones under the '/pu/' namespace
 
         # instantiate the controller goal that will be used to send commands to the robot
         self.reference_tracker = ControllerGoal()
@@ -133,6 +140,20 @@ class RobotControlModule:
         self.topic_rmr = '/kukadat'
         self.pub_rmr_data = rospy.Publisher(self.topic_rmr, Float32MultiArray, queue_size = 1)
 
+        # information about subject
+        self.l_arm = rospy.get_param('/pu/l_arm')
+        self.l_brace = rospy.get_param('/pu/l_brace')
+        self.position_gh_in_base = np.array([rospy.get_param('/pu/p_gh_in_base_x'), 
+                                             rospy.get_param('/pu/p_gh_in_base_y'), 
+                                             rospy.get_param('/pu/p_gh_in_base_z')])
+        
+        self.estimate_gh_position = rospy.get_param('/pu/estimate_gh_position')
+        
+        self.base_R_shoulder = R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix()
+        self.elb_R_ee = R.from_matrix(np.array(rospy.get_param('/pu/elb_R_ee'))).as_matrix()
+
+        self.ar_offset = rospy.get_param('/pu/ar_offset')
+
 
     def _callback_ee_pose(self,data):
         """
@@ -147,21 +168,19 @@ class RobotControlModule:
         if self.initial_pose_reached:
             R_ee = self.ee_pose_curr.R                              # retrieve the rotation matrix defining orientation of EE frame
             cart_pose_ee = self.ee_pose_curr.t                      # retrieve the vector defining 3D position of the EE (in robot base frame)
-            sh_R_elb = np.transpose(R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix())@R_ee@np.transpose(R.from_matrix(np.array(rospy.get_param('/pu/elb_R_ee'))).as_matrix())
+            sh_R_elb = np.transpose(self.base_R_shoulder)@R_ee@np.transpose(self.elb_R_ee)
 
             # calculate the instantaneous position of the center of the shoulder/glenohumeral joint
-            if rospy.get_param('/pu/estimate_gh_position'):
-                position_gh_in_ee = np.array([0, 0, rospy.get_param('/pu/l_arm')+rospy.get_param('/pu/l_brace')])
+            if self.estimate_gh_position:
+                position_gh_in_ee = np.array([0, 0, self.l_arm+self.l_brace])
                 position_gh_in_base = cart_pose_ee + R_ee@position_gh_in_ee
             else:
-                position_gh_in_base = np.array([rospy.get_param('/pu/p_gh_in_base_x'), 
-                                                rospy.get_param('/pu/p_gh_in_base_y'), 
-                                                rospy.get_param('/pu/p_gh_in_base_z')])
+                position_gh_in_base = self.position_gh_in_base
                 
             direction_vector = cart_pose_ee - position_gh_in_base
             direction_vector_norm = direction_vector / np.linalg.norm(direction_vector)
 
-            direction_vector_norm_in_shoulder = np.transpose(R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix())@direction_vector_norm
+            direction_vector_norm_in_shoulder = np.transpose(self.base_R_shoulder)@direction_vector_norm
 
             # 1. we estimate the coordinate values
             # The rotation matrix expressing the elbow frame in shoulder frame is approximated as:
@@ -183,12 +202,12 @@ class RobotControlModule:
 
             # once the previous angles have been retrieved, use the orientation of the EE to find ar
             # (we assume that the EE orientation points towards the center of the shoulder for this)
-            ar = np.arctan2(-sh_R_elb[1,0], sh_R_elb[1,2]/np.sin(se)) + rospy.get_param('/pu/ar_offset')
+            ar = np.arctan2(-sh_R_elb[1,0], sh_R_elb[1,2]/np.sin(se)) + self.ar_offset
 
             # 2. we estimate the coordinate velocities (here the robot and the human are interacting as a geared mechanism)
             # 2.1 estimate the velocity along the plane of elevation
-            sh_twist = R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))).as_matrix().T @ self.ee_twist_curr.reshape((2,3)).T
-            L_tot = rospy.get_param('/pu/l_arm') + rospy.get_param('/pu/l_brace')   # total distance between GH joint and elbow tip
+            sh_twist = self.base_R_shoulder.T @ self.ee_twist_curr.reshape((2,3)).T
+            L_tot = self.l_arm + self.l_brace           # total distance between GH joint and elbow tip
             
             r = np.array([L_tot * np.cos(pe), L_tot * np.sin(pe)])
 
@@ -287,6 +306,14 @@ class RobotControlModule:
         # calculate corresponding 3D position and euler angles just in case
         xyz_position = homogeneous_matrix[0:3, 3]
         euler_angles = R.from_matrix(homogeneous_matrix[0:3, 0:3]).as_euler('zxy', degrees=False)
+
+
+    def callback_dyn_rec(self, config):
+        """
+        This callback will update the parameters that are changed during execution, through the dynamic_reconfigure server
+        """
+        self.l_arm = config.l_arm
+        self.position_gh_in_base = np.array([config.p_gh_in_base_x, config.p_gh_in_base_y, config.p_gh_in_base_z])
 
     
     def togglePublishingEEPose(self, flag, last_controller_mode=None):
