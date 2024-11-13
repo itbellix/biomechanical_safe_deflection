@@ -115,7 +115,7 @@ if __name__ == "__main__":
     sigma_y = 25            # standard deviation along SE in degrees
     amplitude = 4           # max strain at the top
     strain_offset = 0       # constant offset to elevate strain-map
-    strain_threshold = 2    # strain threshold to define risky zones
+    strain_threshold = 1    # strain threshold to define risky zones
 
     # initial state (referred explicitly to the position of the patient's GH joint) 
     # Therapy will start in this position - used to build the NLP structure, and to command first position of the robot
@@ -135,15 +135,15 @@ if __name__ == "__main__":
 
     # control parameters for when the robot needs to deflect the user (high stiffness, damping will be 2*srqt(...))
     ee_trans_stiff_h = 400
-    ee_rot_stiff_xy_h = 15
-    ee_rot_stiff_z_h = 4 
+    ee_rot_stiff_xy_h = 8
+    ee_rot_stiff_z_h = 2 
 
     # control parameters for when the user moves around safely (low stiffness, damping will be 2*srqt(...))
     ee_trans_stiff_l = 20
     ee_rot_stiff_xy_l = 5
     ee_rot_stiff_z_l = 1 
     # ratio to modify damping wrt critical one (for low stiffnesses)
-    damp_ratio = 2
+    damp_ratio = 4
 
     # option to change these only in simulation
     ns_elb_stiffness_sim = ns_elb_stiffness
@@ -195,6 +195,9 @@ if __name__ == "__main__":
 
     # define the parameter for the task (0 means just wait)
     rospy.set_param('/pu/task', 0)
+
+    # define parameters related to the predictive deflection
+    rospy.set_param('/pu/time_horizon', 1)
 
     # define parameter for terminating execution
     rospy.set_param('/pu/execute_program', True)

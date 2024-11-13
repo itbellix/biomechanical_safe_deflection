@@ -756,7 +756,6 @@ class nlps_module():
         w_torque = 1
         w_vel = 1
         w_acc = 1
-        Ts = 1
         delta_e = 5 # delta ellipse in degrees
 
         # tolerances 
@@ -814,7 +813,8 @@ class nlps_module():
 
         # Fixed step Runge-Kutta 4 integrator
         M = 4 # RK4 steps per interval
-        DT = self.T/self.N/M
+        dt = self.opti.parameter(1)         # overall integration step (can be adjusted at runtime)
+        self.params_list.append(dt)         # to modify this later
         f = ca.Function('f', [x, u], [x_dot, L])
         X0 = ca.MX.sym('X0', 6)
         U = ca.MX.sym('U', 3)
@@ -822,12 +822,12 @@ class nlps_module():
         Q = 0
         for j in range(M):
             k1, k1_q = f(X, U)
-            k2, k2_q = f(X + DT/2 * k1, U)
-            k3, k3_q = f(X + DT/2 * k2, U)
-            k4, k4_q = f(X + DT * k3, U)
-            X=X+DT/6*(k1 +2*k2 +2*k3 +k4)
-            Q = Q + DT/6*(k1_q + 2*k2_q + 2*k3_q + k4_q)
-        integrator = ca.Function('integrator', [X0, U], [X, Q], ['x0','p'], ['xf','qf'])
+            k2, k2_q = f(X + dt/(2*M) * k1, U)
+            k3, k3_q = f(X + dt/(2*M) * k2, U)
+            k4, k4_q = f(X + dt/M * k3, U)
+            X=X+dt/(6*M)*(k1 +2*k2 +2*k3 +k4)
+            Q = Q + dt/(6*M)*(k1_q + 2*k2_q + 2*k3_q + k4_q)
+        integrator = ca.Function('integrator', [X0, U, dt], [X, Q], ['x0','p', 'dt'], ['xf','qf'])
 
         # Collect all states/controls, and strain along the trajectory
         Xs = [Xk]
@@ -849,7 +849,7 @@ class nlps_module():
                 + w_pos * ca.sumsqr(Xk[0::2] - future_trajectory_0[0::2, k]) * discount_factor_pos**k
 
             # Integrate till the end of the interval
-            Fk = integrator(x0 = Xk, p = Uk)
+            Fk = integrator(x0 = Xk, p = Uk, dt = dt)
             Xk_end = Fk['xf']
             J = J + Fk['qf']
 
@@ -866,7 +866,8 @@ class nlps_module():
                 # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
                 self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
             elif self.num_unsafe_zones>0:
-                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
+                # here the final point is constrained to be "far enough" from the zones, so that the next horizon of the movement is safe
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * self.N*dt + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * self.N*dt + delta_e)**2 >= 1)
 
         # bounding final velocities according to initial ones
         self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
@@ -889,6 +890,7 @@ class nlps_module():
         self.opti.set_value(init_state, self.x_0)
         self.opti.set_value(future_trajectory_0, fut_traj_value)
         self.opti.set_value(p_uz_1, self.all_params_ellipses)
+        self.opti.set_value(dt, self.T/self.N)
 
         # define the cost function to be minimized, and store its symbolic expression
         self.opti.minimize(J)

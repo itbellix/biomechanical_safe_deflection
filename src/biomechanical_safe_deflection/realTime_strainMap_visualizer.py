@@ -33,7 +33,7 @@ class RealTimeStrainMapVisualizer:
 
 
         # dimensions of the resulting windows in pixels
-        self.widow_dimensions = (800, 600)
+        self.widow_dimensions = (1000, 800)
         self.tick_length = 5                # length of axis ticks, in pixels
         self.width_lines = 3                # width of the lines, in pixels
         self.color_lines = (255, 255, 255)

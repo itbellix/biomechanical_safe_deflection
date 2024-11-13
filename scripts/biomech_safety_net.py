@@ -9,6 +9,7 @@ from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize_scalar
 from std_msgs.msg import Float64MultiArray, Bool
 import threading
+import simpleaudio as sa
 
 import dynamic_reconfigure.client
 
@@ -91,6 +92,9 @@ class BS_net:
         # define the references
         self.x_opt = None
         self.u_opt = None
+
+        # define the timestep for the integrator (in the trajectory optimization structure)
+        self.time_horizon = 1
 
         # parameters regarding the muscle activation
         self.varying_activation = False             # initialize the module assuming that the activation will not change
@@ -200,6 +204,14 @@ class BS_net:
         dynamic_reconfigure.client.Client("pu", timeout=None, config_callback=self._dyn_rec_cb)
         # parameters that can be modified at execution time are the ones under the '/pu/' namespace
 
+        # variables needed to play a sound when the robot takes control
+        self.frequency = 440
+        self.duration_sound = 1.0       # 1 second, meaning sound is produced when robot moves
+        self.sample_rate = 44100
+        t = np.linspace(0, self.duration_sound, int(self.sample_rate * self.duration_sound), False)
+        wave = 0.5 * np.sin(2 * np.pi * self.frequency * t)
+        self.audio = (wave * 32767).astype(np.int16)
+
 
     def _shoulder_pose_cb(self, data):
         """
@@ -307,6 +319,15 @@ class BS_net:
         # Interaction mode
         self.interaction_mode = config.interaction_mode
 
+        # time horizon for the prediction
+        self.time_horizon = config.time_horizon
+
+        # the previous time horizon has an effect also on the sound produced
+        # variables needed to play a sound when the robot takes control
+        self.duration_sound = config.time_horizon
+        t = np.linspace(0, self.duration_sound, int(self.sample_rate * self.duration_sound), False)
+        wave = 0.5 * np.sin(2 * np.pi * self.frequency * t)
+        self.audio = (wave * 32767).astype(np.int16)
 
 
     def setCurrentEllipseParams(self, all_params_ellipse):
@@ -519,7 +540,7 @@ class BS_net:
         # frequency of discretization of the future human movement is used
         if self.interaction_mode == 2:
             # if we are using the solution from the NLPS, then be coherent with the discretization
-            rate = rospy.Rate(1/self.nlps.h)
+            rate = rospy.Rate(1/self.time_horizon/self.nlps.N)
         else:
             # otherwise, run at the expected frequency
             rate = self.ros_rate
@@ -915,7 +936,7 @@ class BS_net:
         
         for timestep in range(1, N+1):
             # retrieve estimation for future human state at current time step (assuming constant velocity)
-            future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
+            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps.N * future_states[1::2, timestep-1]
 
             # check that the estimated point of the trajectory will be safe
             # (for now, this is done in 2D for PE and SE only)
@@ -983,7 +1004,7 @@ class BS_net:
             self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
 
-    def predict_future_state_simple(self, N, T):
+    def predict_future_state_simple(self):
         """
         A variation with respect to predict_future_state_kinematic, where no optimization is run but only
         geometric rules are applied to find some sort of deflection.
@@ -996,19 +1017,19 @@ class BS_net:
         # retrieve number of (elliptical) unsafe zones present on current strain map
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
 
-        self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
+        self.in_zone_i = np.zeros((self.nlps.N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
         initial_state = self.state_values_current[0:6]
 
         # for the next N time-steps, predict the future states of the human model
-        future_states = np.zeros((6, N+1))
+        future_states = np.zeros((6, self.nlps.N+1))
         future_states[::2, 0] = initial_state[::2]      # initialize the first point of the state trajectory
         future_states[1::2, :] = initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
         
-        for timestep in range(1, N+1):
+        for timestep in range(1, self.nlps.N+1):
             # retrieve estimation for future human state at current time step (assuming constant velocity)
-            future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
+            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps.N * future_states[1::2, timestep-1]
 
             # check that the estimated point of the trajectory will be safe
             # (for now, this is done in 2D for PE and SE only)
@@ -1047,10 +1068,10 @@ class BS_net:
         else:
             # if not, then we run a simple optimization problem to find the optimal trajectory to avoid the unsafe areas.
             try:
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps.N)
 
                 # note the order for reshape!
-                traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
+                traj_opt = x_opt.full().reshape((6, self.nlps.N+1), order='F')
                 self.x_opt = traj_opt
                 self.u_opt = None       # TODO: we are ignoring u_opt for now
 
@@ -1059,8 +1080,9 @@ class BS_net:
                 self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
                 self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
-                # sleep for the duration of the optimized trajectory
-                rospy.sleep(self.nlps.T)
+                # produce a sound for the duration of the trajectory (in blocking mode)
+                sa.play_buffer(self.audio, 1, 2, self.sample_rate)
+                rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
 
                 # decrease stiffness again so that subject can continue their movement
                 self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
@@ -1406,7 +1428,7 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        # bsn_module.debug_NLPS_formulation()
+        bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
@@ -1447,7 +1469,7 @@ if __name__ == '__main__':
                     bsn_module.monitor_unsafe_zones()
                     
                 elif bsn_module.interaction_mode == 2:      # mode = 2: actively deflect subject based on movement prediction
-                    bsn_module.predict_future_state_simple(N = 10, T = 1)
+                    bsn_module.predict_future_state_simple()
 
                 else:
                     bsn_module.ros_rate.sleep()

@@ -4,7 +4,8 @@
 
     <!-- Define simulation argument with a default (optional) -->
     <arg name="simulation" default="true"/>
-     <arg name="venv" value="/home/itbellix/Desktop/my_venvs/safe_deflection_venv/bin/python3" />
+    <arg name="bag_name" default="experiment"/>
+    <arg name="venv" value="/home/itbellix/Desktop/my_venvs/safe_deflection_venv/bin/python3" />
 
     <!-- Node for param_updater.py with argument update=true -->
     <node
@@ -45,4 +46,13 @@
         output="screen" 
     />
 
+    <!-- Start rosbag recording
+    <node
+        name="rosbag_record"
+        pkg="rosbag"
+        type="record"
+        output="screen"
+        args="-O /home/itbellix/Desktop/GitHub/iiwa_ros/src/biomechanical_safe_deflection/bags/$(arg name_bag) /cartesian_ref_ee /clock /estimated_shoulder_pose /iiwa7/TorqueController/command /iiwa7/ee_cartesian_pose /iiwa7/ee_cartesian_pose/stop /iiwa7/joint_states /optimization_output /pu/parameter_descriptions /pu/parameter_updates /uncompensated_z_ref"
+    /> -->
+    
 </launch>
