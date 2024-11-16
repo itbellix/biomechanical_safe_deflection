@@ -243,7 +243,7 @@ class BS_net:
                                                     pose_current = self.state_values_current[[0,2]], 
                                                     reference_current = self.x_opt[[0,2],:],
                                                     future_trajectory = None,
-                                                    goal_current = None, 
+                                                    goal_current = np.deg2rad(np.array([70, 90])), 
                                                     vel_current = self.state_values_current[[1,3]],
                                                     ar_current = None)
             else:
@@ -251,7 +251,7 @@ class BS_net:
                                                     pose_current = self.state_values_current[[0,2]], 
                                                     reference_current = self.x_opt[[0,2],:],
                                                     future_trajectory = self.future_trajectory[[0,2],:],
-                                                    goal_current = None, 
+                                                    goal_current = np.deg2rad(np.array([70, 90])),
                                                     vel_current = self.state_values_current[[1,3]],
                                                     ar_current = None)
 
@@ -824,8 +824,10 @@ class BS_net:
             if current_strain<=self.strain_threshold:
                 # if the strain is sufficiently low, then we are safe: we set the parameters
                 # for the cartesian impedance controller to produce minimal interaction force with the subject
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                # self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                # self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
                 self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
@@ -864,8 +866,10 @@ class BS_net:
 
                 # if the directional derivative is negative, then movement is safe (we set low damping)
                 if dStrain_along_direction < 0:
-                    self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                    self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                    # self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                    # self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                    self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+                    self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
                 else:
                     # if the directional derivative is positive, then we have to increase the damping
@@ -1011,7 +1015,7 @@ class BS_net:
         """
         assert self.state_values_current is not None, "The current state of the human model is unknown"
 
-        # disable robot's reference trajectory publishing
+        # enable robot's reference trajectory publishing
         self.flag_pub_trajectory = True
 
         # retrieve number of (elliptical) unsafe zones present on current strain map
@@ -1061,8 +1065,8 @@ class BS_net:
             # if there is no future state which is unsafe, the current position is tracked
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             self.x_opt = initial_state.reshape((6,1))
         else:
@@ -1071,7 +1075,8 @@ class BS_net:
                 x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps.N)
 
                 # note the order for reshape!
-                traj_opt = x_opt.full().reshape((6, self.nlps.N+1), order='F')
+                x_opt = x_opt.full()
+                traj_opt = x_opt.reshape((6, self.nlps.N+1), order='F')
                 self.x_opt = traj_opt
                 self.u_opt = None       # TODO: we are ignoring u_opt for now
 
@@ -1080,13 +1085,20 @@ class BS_net:
                 self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
                 self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
+                # publish the optimized trajectory
+                # create message for output optimization
+                # msg_opt = Float64MultiArray()
+                # msg_opt.data_offset = 0
+                # msg_opt.data = traj_opt
+                # self.pub_optimization_output.publish(msg_opt)
+
                 # produce a sound for the duration of the trajectory (in blocking mode)
                 sa.play_buffer(self.audio, 1, 2, self.sample_rate)
                 rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
 
                 # decrease stiffness again so that subject can continue their movement
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             except:
                 rospy.loginfo("Optimization failed, no valid trajectory found")
@@ -1400,6 +1412,7 @@ if __name__ == '__main__':
                 'expand':1,                     # to leverage analytical expression of the Hessian
                 'ipopt.linear_solver':'ma27'
                 # 'ipopt.linear_solver':'mumps'
+                # 'ipopt.hessian_approximation':'limited-memory'
                 # "jit": True, 
                 # "compiler": "shell", 
                 # "jit_options": 
@@ -1428,7 +1441,7 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        bsn_module.debug_NLPS_formulation()
+        # bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully

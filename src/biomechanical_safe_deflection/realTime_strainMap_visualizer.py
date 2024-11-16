@@ -233,6 +233,7 @@ class RealTimeStrainMapVisualizer:
         if goal_current is not None:
             goal_radius = 3.5
             pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(goal_current)), goal_radius)
+            pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(goal_current) + np.array([10, -30])), goal_radius)
 
         # visualize ellipses
         if self.ellipse_params is not None:

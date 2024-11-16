@@ -161,10 +161,12 @@ class RobotControlModule:
         """
         self.ee_pose_curr = SE3(np.array(data.pose).reshape(4,4))   # value for the homogenous matrix describing ee pose
         self.ee_twist_curr = np.array(data.velocity)                # value for the twist (v and omega, in base frame)
+
+        R_ee = self.ee_pose_curr.R                              # retrieve the rotation matrix defining orientation of EE frame
+        cart_pose_ee = self.ee_pose_curr.t                      # retrieve the vector defining 3D position of the EE (in robot base frame)
+        
         # check if the robot has already reached its desired pose (if so, publish shoulder poses too)
         if self.initial_pose_reached:
-            R_ee = self.ee_pose_curr.R                              # retrieve the rotation matrix defining orientation of EE frame
-            cart_pose_ee = self.ee_pose_curr.t                      # retrieve the vector defining 3D position of the EE (in robot base frame)
             sh_R_elb = np.transpose(self.base_R_shoulder)@R_ee@np.transpose(self.elb_R_ee)
 
             # calculate the instantaneous position of the center of the shoulder/glenohumeral joint

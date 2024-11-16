@@ -109,19 +109,19 @@ if __name__ == "__main__":
         position_gh_in_base = np.array([-0.2, 0.8, 0.6]) # position of the center of the shoulder frame (GH joint) in the base frame [m]
 
     # definition of parameters for strain map and ellipses
-    x0 = 20                 # PE center in degrees
+    x0 = 40                 # PE center in degrees
     y0 = 90                 # SE center in degrees
     sigma_x = 35            # standard deviation along PE in degrees
     sigma_y = 25            # standard deviation along SE in degrees
-    amplitude = 4           # max strain at the top
+    amplitude = 5           # max strain at the top
     strain_offset = 0       # constant offset to elevate strain-map
-    strain_threshold = 1    # strain threshold to define risky zones
+    strain_threshold = 1.5  # strain threshold to define risky zones
 
     # initial state (referred explicitly to the position of the patient's GH joint) 
     # Therapy will start in this position - used to build the NLP structure, and to command first position of the robot
     # x = [pe, pe_dot, se, se_dot, ar, ar_dot], but note that ar and ar_dot are not tracked
 
-    x_0 = np.deg2rad(np.array([70, 0, 100, 0, 0, 0]))
+    x_0 = np.deg2rad(np.array([80, 0, 60, 0, 0, 0]))
     # x_0 = np.deg2rad(np.array([55, -10, 100, 0, 0, 0]))
     # print("INITIAL POSITION IS UNSAFE!!!")
 
@@ -135,14 +135,14 @@ if __name__ == "__main__":
 
     # control parameters for when the robot needs to deflect the user (high stiffness, damping will be 2*srqt(...))
     ee_trans_stiff_h = 400
-    ee_rot_stiff_xy_h = 8
-    ee_rot_stiff_z_h = 2 
+    ee_rot_stiff_xy_h = 20
+    ee_rot_stiff_z_h = 20 
 
     # control parameters for when the user moves around safely (low stiffness, damping will be 2*srqt(...))
     ee_trans_stiff_l = 20
     ee_rot_stiff_xy_l = 5
-    ee_rot_stiff_z_l = 1 
-    # ratio to modify damping wrt critical one (for low stiffnesses)
+    ee_rot_stiff_z_l = 20 
+    # ratio to modify damping wrt critical one (for low stiffness)
     damp_ratio = 4
 
     # option to change these only in simulation
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     rospy.set_param('/pu/l_brace', l_brace)
     rospy.set_param('/pu/d_gh_ee_in_shoulder', dist_shoulder_ee.tolist())
     rospy.set_param('/pu/elb_R_ee', elb_R_ee.as_matrix().tolist())
-    rospy.set_param('/pu/estimate_gh_position', False)
+    rospy.set_param('/pu/estimate_gh_position', True)
     rospy.set_param('/pu/loop_frequency', loop_frequency)
     rospy.set_param('/pu/ar_offset', ar_offset)
     rospy.set_param('/pu/x_0', x_0.tolist())

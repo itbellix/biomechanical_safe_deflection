@@ -606,6 +606,8 @@ class nlps_module():
         future_trajectory_0 = self.opti.parameter(self.dim_x, self.N)
         self.params_list.append(future_trajectory_0)
 
+        self.opti.set_initial(Xk, np.array([1, 0, 2, 0, 0, 0]))
+
         # parametrize the ellipses expressing unsafe zones
         # if this information is present, define the strainmap to navigate onto
         if self.num_unsafe_zones>0:
@@ -680,6 +682,7 @@ class nlps_module():
 
             # new decision variable for state at the end of interval
             Xk = self.opti.variable(self.dim_x)
+            self.opti.set_initial(Xk, np.array([1, 0, 2, 0, 0, 0]))
             Xs.append(Xk)
 
             J = J + w_vel * ca.sumsqr(Xk[1::2] - init_state[1::2])
@@ -688,11 +691,11 @@ class nlps_module():
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
-            if self.num_unsafe_zones>0 and k<self.N-1:
-                # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
-                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
-            elif self.num_unsafe_zones>0:
-                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
+            # if self.num_unsafe_zones>0 and k<self.N-1:
+            #     # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
+            #     self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
+            # elif self.num_unsafe_zones>0:
+            #     self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
 
         # # bounding final velocities according to initial ones
         # self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
