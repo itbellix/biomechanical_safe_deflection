@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize_scalar
-from std_msgs.msg import Float64MultiArray, Bool
+from std_msgs.msg import Float64MultiArray, Bool, Float32MultiArray
 import threading
 import simpleaudio as sa
 
@@ -170,7 +170,8 @@ class BS_net:
 
         # Create the publisher dedicated to stream the optimal trajectories and controls
         self.topic_optimization_output = rospy.get_param('/rostopic/optimization_output')
-        self.pub_optimization_output = rospy.Publisher(self.topic_optimization_output, Float64MultiArray, queue_size=1)
+        self.pub_optimization_output = rospy.Publisher(self.topic_optimization_output, Float32MultiArray, queue_size=1)
+        self.msg_opt = Float32MultiArray()
 
         # Create a subscriber to listen to the current value of the shoulder pose
         self.topic_shoulder_pose = rospy.get_param('/rostopic/estimated_shoulder_pose')
@@ -1080,19 +1081,17 @@ class BS_net:
                 self.x_opt = traj_opt
                 self.u_opt = None       # TODO: we are ignoring u_opt for now
 
+                # publish the optimized trajectory
+                # create message for output optimization (TODO: test this!)
+                self.msg_opt.data = traj_opt
+                self.pub_optimization_output.publish(self.msg_opt)
+
                 # increase stiffness to actually track the optimal deflected trajectory
                 # values of stiffness can be updated in real-time
                 self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
                 self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
-                # publish the optimized trajectory
-                # create message for output optimization
-                # msg_opt = Float64MultiArray()
-                # msg_opt.data_offset = 0
-                # msg_opt.data = traj_opt
-                # self.pub_optimization_output.publish(msg_opt)
-
-                # produce a sound for the duration of the trajectory (in blocking mode)
+                # produce a sound for the duration of the trajectory
                 sa.play_buffer(self.audio, 1, 2, self.sample_rate)
                 rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
 
