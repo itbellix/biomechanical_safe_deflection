@@ -158,8 +158,8 @@ class BS_net:
         self.failed_count = 0                       # number of failures encountered
 
         # Create publisher for the cartesian trajectory for the KUKA end-effector
-        self.topic_opt_traj = rospy.get_param('/rostopic/cartesian_ref_ee')
-        self.pub_trajectory = rospy.Publisher(self.topic_opt_traj, Float64MultiArray, queue_size=1)
+        self.topic_ref_traj = rospy.get_param('/rostopic/cartesian_ref_ee')
+        self.pub_trajectory = rospy.Publisher(self.topic_ref_traj, Float64MultiArray, queue_size=1)
         self.flag_pub_trajectory = False    # flag to check if trajectory is being published (default: False = no publishing)
         
         # Create the publisher for the unused z_reference
@@ -1076,31 +1076,32 @@ class BS_net:
                 x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps.N)
 
                 # note the order for reshape!
-                x_opt = x_opt.full()
-                traj_opt = x_opt.reshape((6, self.nlps.N+1), order='F')
-                self.x_opt = traj_opt
+                x_opt = x_opt.full().reshape((6, self.nlps.N+1), order='F')
+                traj_opt = x_opt.reshape((6*(self.nlps.N+1), 1))
+                self.x_opt = x_opt
                 self.u_opt = None       # TODO: we are ignoring u_opt for now
-
-                # publish the optimized trajectory
-                # create message for output optimization (TODO: test this!)
-                self.msg_opt.data = traj_opt
-                self.pub_optimization_output.publish(self.msg_opt)
-
-                # increase stiffness to actually track the optimal deflected trajectory
-                # values of stiffness can be updated in real-time
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
-                self.ee_cart_damping_cmd = self.ee_cart_damping_default
-
-                # produce a sound for the duration of the trajectory
-                sa.play_buffer(self.audio, 1, 2, self.sample_rate)
-                rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
-
-                # decrease stiffness again so that subject can continue their movement
-                self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
-                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
-
+            
             except:
                 rospy.loginfo("Optimization failed, no valid trajectory found")
+                traj_opt = None
+
+            # publish the optimized trajectory
+            # create message for output optimization    
+            self.msg_opt.data = traj_opt
+            self.pub_optimization_output.publish(self.msg_opt)
+
+            # increase stiffness to actually track the optimal deflected trajectory
+            # values of stiffness can be updated in real-time
+            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
+            self.ee_cart_damping_cmd = self.ee_cart_damping_default
+
+            # produce a sound for the duration of the trajectory
+            sa.play_buffer(self.audio, 1, 2, self.sample_rate)
+            rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
+
+            # decrease stiffness again so that subject can continue their movement
+            self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
 
     def debug_sysDynamics(self):
