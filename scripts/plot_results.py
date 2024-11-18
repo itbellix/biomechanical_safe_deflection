@@ -6,7 +6,121 @@ import os
 from spatialmath import SO3
 from roboticstoolbox.robot.ERobot import ERobot, ERobot2
 import roboticstoolbox as rtb
+from spatialmath.base import trotz, transl
+from roboticstoolbox import DHRobot, RevoluteMDH
 
+
+class LBR7_iiwa_ros_DH(DHRobot):
+    """
+    Class that imports a LBR URDF model
+    ``LBR()`` is a class which imports a Kuka LBR robot definition
+    from a URDF file.  The model describes its kinematic and graphical
+    characteristics.
+    .. runblock:: pycon
+        >>> import roboticstoolbox as rtb
+        >>> robot = rtb.models.URDF.LBR()
+        >>> print(robot)
+    Defined joint configurations are:
+    - qz, zero joint angle configuration, 'L' shaped configuration
+    - qr, vertical 'READY' configuration
+    - qs, arm is stretched out in the x-direction
+    - qn, arm is at a nominal non-singular configuration
+    .. codeauthor:: Jesse Haviland
+    .. sectionauthor:: Peter Corke
+    """
+
+    def __init__(self):
+
+        # deg = np.pi/180
+        
+        # This LBR model is defined using modified
+        # Denavit-Hartenberg parameters
+        L = [
+            RevoluteMDH(
+                a=0.,
+                d=0.340,
+                alpha=0.,
+                I=[0.02183, 0.007703, 0.02083, 0., -0.003887, 0.],
+                r=[0., -0.03, -0.07],
+                m=3.4525,
+                G=1,
+                qlim=[-2.96706, 2.96706]
+            ),
+
+            RevoluteMDH(
+                a=0.,
+                d=0.,
+                alpha=-np.pi/2.,
+                I=[0.02076, 0.02179, 0.00779, 0., 0., 0.003626],
+                r=[-0.0003, -0.059, 0.042],
+                m=3.4821,
+                G=1,
+                qlim=[-2.094395, 2.094395]
+            ),
+
+            RevoluteMDH(
+                a=0.,
+                d=0.400,
+                alpha=np.pi/2.,
+                I=[0.03204, 0.00972, 0.03042, 0., 0.006227, 0.],
+                r=[0., 0.03, -0.06],
+                m=4.05623,
+                G=1,
+                qlim=[-2.96706, 2.96706]
+            ),
+
+            RevoluteMDH(
+                a=0.,
+                d=0.,
+                alpha=np.pi/2.,
+                I=[0.02178, 0.02075, 0.007785, 0., -0.003625, 0.],
+                r=[0., 0.067, 0.034],
+                m=3.4822,
+                G=1,
+                qlim=[-2.094395, 2.094395]
+            ),
+
+            RevoluteMDH(
+                a=0.,
+                d=0.400,
+                alpha=-np.pi/2.,
+                I=[0.01287, 0.005708, 0.01112, 0., 0.003946, 0.],
+                r=[-0.0001, -0.021, -0.114],
+                m=2.1633,
+                G=1,
+                qlim=[-2.96706, 2.96706]
+            ),
+
+            RevoluteMDH(
+                a=0.,
+                d=0.,
+                alpha=-np.pi/2.,
+                I=[0.006509, 0.006259, 0.004527, 0., -0.000319, -0.],
+                r=[0., -0.0006, -0.0603],
+                m=2.3466,
+                G=1,
+                qlim=[-2.094395, 2.094395]
+            ),
+
+            RevoluteMDH(
+                a=0.,
+                d=0.126,
+                alpha=np.pi/2.,
+                I=[0.01464, 0.01465, 0.002872, 0.000591, 0., 0.],
+                r=[0., 0., -0.025],
+                m=3.129,
+                G=1,
+                qlim=[-3.054326, 3.054326]
+            )
+        ]
+
+        super().__init__(
+            L,
+            name='LBR7_iiwa_ros_DH',
+            manufacturer="Kuka")
+
+        self.addconfiguration("qz", np.array([0, 0, 0, 0, 0, 0, 0]))
+        self.addconfiguration("qr", np.array([0, -0.3, 0, -1.9, 0, 1.5, np.pi / 4]))
 
 
 class strainMap:
@@ -99,7 +213,8 @@ if __name__=='__main__':
     time_end_perc = 0.5     # percentage of the experiment to be considered as "end"
 
     # instantiate robot model
-    kuka = ERobot.URDF('/home/itbellix/Desktop//GitHub/iiwa_ros/src/iiwa_description/urdf/iiwa7.urdf.xacro')
+    # kuka = ERobot.URDF('/home/itbellix/Desktop//GitHub/iiwa_ros/src/iiwa_description/urdf/iiwa7.urdf.xacro')
+    kuka = LBR7_iiwa_ros_DH()
 
     # STEP 1: define the strain map used in the experiments
     # definition of parameters for artificial strain map and ellipse
@@ -123,7 +238,7 @@ if __name__=='__main__':
 
     # STEP 2: extract values from the ROS bags
     bag_file_name = 'reactUnsafe_0.bag'
-    bag_file_name = 'expetiment.bag'
+    # bag_file_name = 'expetiment.bag'
 
     # list of variables we are interested in
     estimated_shoulder_state = None
@@ -223,12 +338,12 @@ if __name__=='__main__':
         # extracting output of the trajectory optimization
         print('Extracting optimization outputs')
         for _, msg, time_msg in bag.read_messages(topics=['/optimization_output']):
-            data = np.reshape(msg.data[0:-1], (6, 11))
+            data = np.reshape(msg.data, (6, 11))
             time_opt = time_msg.to_time()
             if optimal_trajectory is None:
-                optimal_trajectory = np.hstack((data[0:6,:], time_opt * np.ones((6,1))))
+                optimal_trajectory = np.hstack((data, time_opt * np.ones((6,1))))
             else:
-                optimal_trajectory = np.vstack((optimal_trajectory, np.hstack((data[0:6,:], time_opt * np.ones((6,1))))))
+                optimal_trajectory = np.vstack((optimal_trajectory, np.hstack((data, time_opt))))
 
 
         # extracting the joint state values
@@ -236,23 +351,23 @@ if __name__=='__main__':
         for _, msg, time_msg in bag.read_messages(topics=['/iiwa7/joint_states']):
             time_joint = time_msg.to_time()
 
-
-            # here we also EXTRACT CONTACT FORCE MAGNITUDE
-            # considering the full dynamic model of the robot:
-            # tau = M(q) * q_ddot + C(q, q_dot) * q_dot + G(q) + J^T * F_ext  -> we want the F_ext!
-            # 
-            # However, the Kuka already runs its own gravity compensation, so effectively the term G(q) should be cancelled,
-            # as tau includes it already. Moreover, if we assume minimal acceleration, we can disregard M(q):
-            # F_ext = (J^T)^(-1) * (tau - C(q, q_dot) * q_dot)
-            # 
-            # Let's use the robotics toolbox functionalities to calculate it!
-            J = kuka.jacob0(msg.position)
-            J_inv = np.linalg.pinv(J)
-            # C_qq_dot = kuka.coriolis(np.array(msg.position), np.array(msg.velocity))      # TODO: coriolis method does not work
-            # wrench_ee = J_inv.transpose() @ (np.array(msg.effort) - C_qq_dot @ np.array(msg.velocity))
-            wrench_ee = J_inv.transpose() @ np.array(msg.effort)
-
             if time_joint >= xyz_ref[0, -1]:
+                # here we also EXTRACT CONTACT FORCE MAGNITUDE
+                # considering the full dynamic model of the robot:
+                # tau = M(q) * q_ddot + C(q, q_dot) * q_dot + G(q) + J^T * F_ext  -> we want the F_ext!
+                # 
+                # Since the Kuka already runs its own gravity compensation, the term G(q) is accounted for in tau.
+                # If we assume minimal acceleration, we can disregard M(q):
+                # F_ext = (J^T)^(-1) * (tau - C(q, q_dot) * q_dot - G(q))
+                # 
+                # Let's use the robotics toolbox functionalities to calculate it!
+                J = kuka.jacob0(msg.position)
+                J_inv = np.linalg.pinv(J)
+                C_qq_dot = kuka.coriolis(msg.position, msg.velocity)
+                G_q = kuka.gravload(msg.position)
+                wrench_ee = J_inv.transpose() @ (np.array(msg.effort) - C_qq_dot @ np.array(msg.velocity) + G_q)
+                # wrench_ee = J_inv.transpose() @ np.array(msg.effort)
+
                 if joint_pos is None:
                     joint_pos = np.hstack((msg.position, time_joint))
                     joint_vel = np.hstack((msg.velocity, time_joint))
@@ -260,8 +375,8 @@ if __name__=='__main__':
                     external_force = np.hstack((wrench_ee, time_joint))
                 else:
                     joint_pos = np.vstack((joint_pos, np.hstack((msg.position, time_joint))))
-                    joint_vel = np.vstack((joint_vel, np.hstack((msg.position, time_joint))))
-                    joint_eff = np.vstack((joint_eff, np.hstack((msg.position, time_joint))))
+                    joint_vel = np.vstack((joint_vel, np.hstack((msg.velocity, time_joint))))
+                    joint_eff = np.vstack((joint_eff, np.hstack((msg.effort, time_joint))))
                     external_force = np.vstack((external_force, np.hstack((wrench_ee, time_joint))))
 
 
@@ -283,6 +398,7 @@ if __name__=='__main__':
     joint_pos_plot = joint_pos
     joint_vel_plot = joint_vel
     joint_eff_plot = joint_eff
+    external_force_plot = external_force
 
     estimated_shoulder_state_plot[:,-1] = estimated_shoulder_state_plot[:,-1] - init_time   # center time values starting at initial time
     xyz_curr_plot[:,-1] = xyz_curr_plot[:,-1] - init_time
@@ -294,6 +410,7 @@ if __name__=='__main__':
     joint_pos_plot[:,-1] = joint_pos_plot[:,-1] - init_time
     joint_vel_plot[:,-1] = joint_vel_plot[:,-1] - init_time
     joint_eff_plot[:,-1] = joint_eff_plot[:,-1] - init_time
+    external_force_plot[:,-1] = external_force_plot[:,-1] - init_time
 
 
     if z_uncompensated_plot is not None:
@@ -312,6 +429,7 @@ if __name__=='__main__':
     joint_pos_plot = joint_pos_plot[(joint_pos_plot[:,-1]>0) & (joint_pos_plot[:,-1]<end_time)]
     joint_vel_plot = joint_vel_plot[(joint_vel_plot[:,-1]>0) & (joint_vel_plot[:,-1]<end_time)]
     joint_eff_plot = joint_eff_plot[(joint_eff_plot[:,-1]>0) & (joint_eff_plot[:,-1]<end_time)]
+    external_force_plot = external_force_plot[(external_force_plot[:,-1]>0) & (external_force_plot[:,-1]<end_time)]
     
     if z_uncompensated_plot is not None:
         z_uncompensated_plot = z_uncompensated_plot[(z_uncompensated_plot[:,-1]>0) & (z_uncompensated_plot[:,-1]<end_time)]
@@ -336,8 +454,8 @@ if __name__=='__main__':
     fig_sd.suptitle("Stiffness and Damping")
 
     # EVOLUTION OF THE INTERACTION FORCE
-    force_magnitude = np.sqrt(np.sum(external_force[:, :3]**2, axis=1))
+    force_magnitude = np.sqrt(np.sum(external_force_plot[:, :3]**2, axis=1))
     fig_f = plt.figure()
     ax_f = fig_f.add_subplot()
-    ax_f.plot(force_magnitude)
+    ax_f.plot(external_force_plot[:,-1], force_magnitude)
 
