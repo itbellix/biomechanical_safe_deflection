@@ -755,8 +755,8 @@ class nlps_module():
 
         # weights of the cost function
         w_pos = 1
-        discount_factor_pos = 0.8
-        w_torque = 1
+        discount_factor_pos = 0.9
+        w_torque = 2
         w_vel = 1
         w_acc = 1
         delta_e = 5 # delta ellipse in degrees
@@ -860,7 +860,8 @@ class nlps_module():
             Xk = self.opti.variable(self.dim_x)
             Xs.append(Xk)
 
-            J = J + w_vel * ca.sumsqr(Xk[1::2] - init_state[1::2])
+            # add a velocity tracking term (TODO: I think we dont want it)
+            # J = J + w_vel * ca.sumsqr(Xk[1::2] - init_state[1::2])
 
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
@@ -873,9 +874,9 @@ class nlps_module():
                 self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * self.N*dt + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * self.N*dt + delta_e)**2 >= 1)
 
         # bounding final velocities according to initial ones
-        self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
-        self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
-        self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
+        self.opti.subject_to(Xk[1]**2 < delta_vel)
+        self.opti.subject_to(Xk[3]**2 < delta_vel)
+        self.opti.subject_to(Xk[5]**2 < delta_vel)
 
         # bounding the final position to avoid unrealistic solutions that end up very far from initial state
         self.opti.subject_to(ca.sumsqr(Xk[0::2] - init_state[0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
