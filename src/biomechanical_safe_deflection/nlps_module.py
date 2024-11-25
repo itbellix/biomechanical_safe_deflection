@@ -573,8 +573,9 @@ class nlps_module():
 
         # weights of the cost function
         w_pos = 1
-        discount_factor_pos = 0.8
+        discount_factor_pos = 0.9
         w_torque = 1
+        discount_factor_torque = 1
         w_vel = 1
         w_acc = 1
         Ts = 1
@@ -640,7 +641,7 @@ class nlps_module():
             # - the deviation from the estimated future states
             torque_stabil_k = self.sys_inv_dynamics(ca.vertcat(future_trajectory_0[:, k], np.zeros((3,))))
             J = J \
-                + w_torque * ca.sumsqr(Uk - torque_stabil_k) \
+                + w_torque * ca.sumsqr(Uk - torque_stabil_k) * discount_factor_torque **k\
                 + w_pos * ca.sumsqr(Xk[0::2] - future_trajectory_0[0::2, k]) * discount_factor_pos**k
 
             # optimization variable (state) at collocation points
@@ -675,7 +676,7 @@ class nlps_module():
             Xddot_s.append(ode[1::2, 0])
 
             # consider acceleration of each collocation point in the cost function
-            J = J + w_acc * ca.sumsqr(ode[1::2, :])
+            J = J + w_acc * ca.sumsqr(ode[1::2, :])     # TODO: maybe use acceleration of one point only!!
 
             # state at the end of collocation interval
             Xk_end = ca.mtimes(Z, self.D)
@@ -691,19 +692,19 @@ class nlps_module():
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
-            # if self.num_unsafe_zones>0 and k<self.N-1:
-            #     # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
-            #     self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
-            # elif self.num_unsafe_zones>0:
-            #     self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
+            if self.num_unsafe_zones>0 and k<self.N-1:
+                # Note that the ellipse parameters are defined with a state in degrees (we need to convert Xk)
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/p_uz_1[2] + (Xk[2]*180/ca.pi - p_uz_1[1])**2/p_uz_1[3] >= 1)
+            elif self.num_unsafe_zones>0:
+                self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
 
-        # # bounding final velocities according to initial ones
-        # self.opti.subject_to((Xk[1] - future_trajectory_0[1, -1])**2 < delta_vel)
-        # self.opti.subject_to((Xk[3] - future_trajectory_0[3, -1])**2 < delta_vel)
-        # self.opti.subject_to((Xk[5] - future_trajectory_0[5, -1])**2 < delta_vel)
+        # bounding final velocities according to initial ones
+        self.opti.subject_to(Xk[1]**2 < delta_vel)
+        self.opti.subject_to(Xk[3]**2 < delta_vel)
+        self.opti.subject_to(Xk[5]**2 < delta_vel)
 
         # # bounding the final position to avoid unrealistic solutions that end up very far from initial state
-        # self.opti.subject_to(ca.sumsqr(Xk[0::2] - init_state[0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
+        self.opti.subject_to(ca.sumsqr(Xk[0::2] - init_state[0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
 
         # # bounding final velocities
         # # self.opti.subject_to((Xk[1])**2 < delta_vel)
@@ -712,8 +713,8 @@ class nlps_module():
         # # bounding final torques 
         # # (we need to resort to ID here, to find the torques that can stabilize the final state)
         # # Note that the final velocity can also be non-zero (depending on the bounds imposed above)
-        # torque_stabil_end = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
-        # self.opti.subject_to(self.opti.bounded(torque_stabil_end - delta_torque, Uk, torque_stabil_end + delta_torque))
+        torque_stabil_end = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
+        self.opti.subject_to(self.opti.bounded(torque_stabil_end - delta_torque, Uk, torque_stabil_end + delta_torque))
 
         # manipulate variables to retrieve their values after the NLP is solved
         self.Us = ca.vertcat(*Us)
@@ -756,9 +757,8 @@ class nlps_module():
         # weights of the cost function
         w_pos = 1
         discount_factor_pos = 0.9
-        w_torque = 2
-        w_vel = 1
-        w_acc = 1
+        w_torque = 4
+        discount_factor_torque = 0.9
         delta_e = 5 # delta ellipse in degrees
 
         # tolerances 
@@ -848,7 +848,7 @@ class nlps_module():
             # in the cost function, we weight:
             # - the control effort
             # - the deviation from the estimated future states
-            J = J + w_torque * ca.sumsqr(Uk) \
+            J = J + w_torque * ca.sumsqr(Uk) * discount_factor_torque ** k \
                 + w_pos * ca.sumsqr(Xk[0::2] - future_trajectory_0[0::2, k]) * discount_factor_pos**k
 
             # Integrate till the end of the interval

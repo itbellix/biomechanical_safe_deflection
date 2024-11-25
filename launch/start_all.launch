@@ -54,7 +54,7 @@
             pkg="rosbag"
             type="record"
             output="screen"
-            args="-O /home/itbellix/Desktop/GitHub/iiwa_ros/src/biomechanical_safe_deflection/bags/$(arg name_bag) /cartesian_ref_ee /clock /estimated_shoulder_pose /iiwa7/TorqueController/command /iiwa7/ee_cartesian_pose /iiwa7/ee_cartesian_pose/stop /iiwa7/joint_states /optimization_output /pu/parameter_descriptions /pu/parameter_updates /uncompensated_z_ref"
+            args="-O /home/itbellix/Desktop/GitHub/iiwa_ros/src/biomechanical_safe_deflection/bags/$(arg name_bag) /cartesian_ref_ee /clock /estimated_shoulder_pose /iiwa7/TorqueController/command /iiwa7/ee_cartesian_pose /iiwa7/ee_cartesian_pose/stop /iiwa7/joint_states /optimization_output /pu/parameter_descriptions /pu/parameter_updates /uncompensated_z_ref /request_reference"
         />
     </group>
     

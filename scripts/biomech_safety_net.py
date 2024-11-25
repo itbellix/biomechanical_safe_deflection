@@ -150,8 +150,10 @@ class BS_net:
 
         # initialize the NLP on strain maps, together with the equivalent CasADi function and the input it requires
         self.nlps = None
-        self.mpc_iter = None
-        self.input_mpc_call = None
+        self.mpc_iter_OSAD = None
+        self.input_mpc_call_OSAD = None
+        self.mpc_iter_simpleMass = None
+        self.input_mpc_call_simpleMass = None
 
         self.nlp_count = 0                          # keeps track of the amount of times the NLP is solved
         self.avg_nlp_time = 0                       # average time required for each NLP iteration
@@ -883,19 +885,22 @@ class BS_net:
                 self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
 
-    def assign_nlps(self, nlps_object):
+    def assign_nlps(self, nlps_object_1, nlps_object_2 = None):
         """
         This function takes care of embedding the NLP problem for planning on strain maps into the BSN.
         """
-        self.nlps = nlps_object
+        self.nlps_simpleMass = nlps_object_1
+        self.nlps_OSAD = nlps_object_2
 
         # the overall NLP problem is formulated, meaning that its structure is determined based on the
         # previous inputs
-        self.nlps.formulateNLP_simpleMass()
+        self.nlps_simpleMass.formulateNLP_simpleMass()
+        self.nlps_OSAD.formulateNLP_newVersion()
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
         # both the function and the inputs it needs are initialized here
-        self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuesses()
+        self.mpc_iter_simpleMass, self.input_mpc_call_simpleMass = self.nlps_simpleMass.createOptimalMapWithoutInitialGuesses()
+        self.mpc_iter_OSAD, self.input_mpc_call_OSAD = self.nlps_OSAD.createOptimalMapWithoutInitialGuesses()
 
 
     def predict_future_state_kinematic(self, N, T):
@@ -941,7 +946,7 @@ class BS_net:
         
         for timestep in range(1, N+1):
             # retrieve estimation for future human state at current time step (assuming constant velocity)
-            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps.N * future_states[1::2, timestep-1]
+            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps_OSAD.N * future_states[1::2, timestep-1]
 
             # check that the estimated point of the trajectory will be safe
             # (for now, this is done in 2D for PE and SE only)
@@ -1001,7 +1006,7 @@ class BS_net:
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
             # sleep for the duration of the optimized trajectory
-            rospy.sleep(self.nlps.T)
+            rospy.sleep(self.nlps_OSAD.T)
 
             # decrease stiffness again so that subject can continue their movement
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
@@ -1022,19 +1027,19 @@ class BS_net:
         # retrieve number of (elliptical) unsafe zones present on current strain map
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
 
-        self.in_zone_i = np.zeros((self.nlps.N+1, num_ellipses))   # initialize counter for unsafe states
+        self.in_zone_i = np.zeros((self.nlps_simpleMass.N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
         initial_state = self.state_values_current[0:6]
 
         # for the next N time-steps, predict the future states of the human model
-        future_states = np.zeros((6, self.nlps.N+1))
+        future_states = np.zeros((6, self.nlps_simpleMass.N+1))
         future_states[::2, 0] = initial_state[::2]      # initialize the first point of the state trajectory
         future_states[1::2, :] = initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
         
-        for timestep in range(1, self.nlps.N+1):
+        for timestep in range(1, self.nlps_simpleMass.N+1):
             # retrieve estimation for future human state at current time step (assuming constant velocity)
-            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps.N * future_states[1::2, timestep-1]
+            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps_simpleMass.N * future_states[1::2, timestep-1]
 
             # check that the estimated point of the trajectory will be safe
             # (for now, this is done in 2D for PE and SE only)
@@ -1073,11 +1078,11 @@ class BS_net:
         else:
             # if not, then we run a simple optimization problem to find the optimal trajectory to avoid the unsafe areas.
             try:
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps.N)
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps_simpleMass.N)
 
                 # note the order for reshape!
-                x_opt = x_opt.full().reshape((6, self.nlps.N+1), order='F')
-                traj_opt = x_opt.reshape((6*(self.nlps.N+1), 1))
+                x_opt = x_opt.full().reshape((6, self.nlps_simpleMass.N+1), order='F')
+                traj_opt = x_opt.reshape((6*(self.nlps_simpleMass.N+1), 1))
                 self.x_opt = x_opt
                 self.u_opt = None       # TODO: we are ignoring u_opt for now
             
@@ -1206,7 +1211,8 @@ class BS_net:
     def debug_NLPS_formulation(self):
         # first solve the nlp problem
         time_start = time.time()
-        x_opt, u_opt, sol, x_opt_coll = self.nlps.solveNLPOnce()
+        self.nlps_simpleMass.solveNLPOnce()
+        self.nlps_OSAD.solveNLPOnce()
         time_execution_0 = time.time() - time_start
 
         print ("execution with Opti: ", np.round(time_execution_0,3))
@@ -1259,14 +1265,16 @@ class BS_net:
         rng = np.random.default_rng()
         instances = 100
 
-        time_duration = np.zeros((instances, 1))
+        time_duration_simpleMass = np.zeros((instances, 1))
+        time_duration_OSAD = np.zeros((instances, 1))
+        squareDiff_last_state = np.zeros((instances, 1))
 
         for instance in range(instances):
-            pe_init = np.deg2rad(rng.uniform(low = 55, high = 60))
+            pe_init = np.deg2rad(rng.uniform(low = 78, high = 82))
             pe_dot_init = np.deg2rad(rng.uniform(low = -15, high = -5))
 
-            se_init = np.deg2rad(rng.uniform(low = 95, high = 105))
-            se_dot_init = np.deg2rad(rng.uniform(low = -15, high = 5))
+            se_init = np.deg2rad(rng.uniform(low = 80, high = 100))
+            se_dot_init = np.deg2rad(rng.uniform(low = -15, high = 15))
 
             ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
             ar_dot_init = np.deg2rad(0)
@@ -1278,61 +1286,85 @@ class BS_net:
             # sim_initial_state =self.nlps.x_0
 
             # first, we estimate the future states given the initial one
-            fut_traj_value = np.zeros((self.nlps.dim_x, self.nlps.N+1))
+            fut_traj_value = np.zeros((self.nlps_simpleMass.dim_x, self.nlps_simpleMass.N+1))
             fut_traj_value[:,0] = sim_initial_state
             fut_traj_value[1::2, :] = sim_initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
-            for timestep in range(1, self.nlps.N+1):
-                fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps.h * fut_traj_value[1::2, timestep-1]
+            for timestep in range(1, self.nlps_simpleMass.N+1):
+                fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps_simpleMass.h * fut_traj_value[1::2, timestep-1]
 
-            # solve the NLP once
-            time_start = time.time()
+            # solve the problem with simpleMass
+            time_start_simpleMass = time.time()
             try:
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses)
+                x_opt_simpleMass, u_opt, _,  j_opt, xddot_opt = self.mpc_iter_simpleMass(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses, self.time_horizon/self.nlps_simpleMass.N)
+                x_opt_simpleMass = x_opt_simpleMass.full().reshape((6, 11), order='F')
+                unfeasible_simpleMass = 0
             except:
-                RuntimeError("Optimization not converged")
+                RuntimeError("Optimization simpleMass not converged")
+                unfeasible_simpleMass = 1
 
-            # print the solution
-            x_opt = x_opt.full().reshape((6, 11), order='F')
+            time_duration_simpleMass[instance] = time.time() - time_start_simpleMass
+
+            # solve the problem with OSAD
+            time_start_OSAD = time.time()
+            try:
+                x_opt_OSAD, u_opt, _,  j_opt, xddot_opt = self.mpc_iter_OSAD(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses)
+                x_opt_OSAD = x_opt_OSAD.full().reshape((6, 11), order='F')
+                unfeasible_OSAD = 0
+            except:
+                RuntimeError("Optimization OSAD not converged")
+                unfeasible_OSAD = 1
+                
+
+            time_duration_OSAD[instance] = time.time() - time_start_OSAD
+
+            # print the solutions on the same landscape
             # x_opt = x_opt.reshape((6, 11), order='F')
+            if unfeasible_OSAD+unfeasible_simpleMass==0:
+                fig = plt.figure()
+                ax = fig.add_subplot(311)
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(x_opt_simpleMass[0,:]), c='blue', label='simpleMass')
+                ax.scatter(range(self.nlps_OSAD.N+1), np.rad2deg(x_opt_OSAD[0,:]), c='black', label='OSAD')
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(fut_traj_value[0,:]), c='red', label='free')
 
-            fig = plt.figure()
-            ax = fig.add_subplot(311)
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[0,:]), c='blue', label='optimized')
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[0,:]), c='red', label='free')
+                ax = fig.add_subplot(312)
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(x_opt_simpleMass[2,:]), c='blue')
+                ax.scatter(range(self.nlps_OSAD.N+1), np.rad2deg(x_opt_OSAD[2,:]), c='black')
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(fut_traj_value[2,:]), c='red')
 
-            ax = fig.add_subplot(312)
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[2,:]), c='blue')
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[2,:]), c='red')
+                ax = fig.add_subplot(313)
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(x_opt_simpleMass[4,:]), c='blue')
+                ax.scatter(range(self.nlps_OSAD.N+1), np.rad2deg(x_opt_OSAD[4,:]), c='black')
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(fut_traj_value[4,:]), c='red')
 
-            ax = fig.add_subplot(313)
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[4,:]), c='blue')
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[4,:]), c='red')
+                fig.legend()
 
-            fig.legend()
+                # title
+                fig.suptitle("x0 = [" + 
+                            str(np.round(np.rad2deg(pe_init), 1)) + ", " +
+                            str(np.round(np.rad2deg(pe_dot_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(se_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(se_dot_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(ar_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(ar_dot_init), 1)) +
+                            "]")
 
-            # title
-            fig.suptitle("x0 = [" + 
-                         str(np.round(np.rad2deg(pe_init), 1)) + ", " +
-                         str(np.round(np.rad2deg(pe_dot_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(se_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(se_dot_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(ar_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(ar_dot_init), 1)) +
-                           "]")
+                fig = plt.figure()
+                ax = fig.add_subplot()
+                ax.plot(np.rad2deg(x_opt_simpleMass[0,:]), np.rad2deg(x_opt_simpleMass[2,:]), c = 'blue', label='simpleMass')
+                ax.plot(np.rad2deg(x_opt_OSAD[0,:]), np.rad2deg(x_opt_OSAD[2,:]), c = 'black', label='OSAD')
+                # ax.plot(np.rad2deg(x_opt_simpleMass[0,0]), np.rad2deg(x_opt_simpleMass[2,0]), c = 'cyan')
+                ax.scatter(np.rad2deg(fut_traj_value[0,:]), np.rad2deg(fut_traj_value[2,:]), c = 'red')
+                ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.1))
 
-            fig = plt.figure()
-            ax = fig.add_subplot()
-            ax.scatter(np.rad2deg(x_opt[0,:]), np.rad2deg(x_opt[2,:]), c = 'blue')
-            ax.scatter(np.rad2deg(x_opt[0,0]), np.rad2deg(x_opt[2,0]), c = 'cyan')
-            ax.scatter(np.rad2deg(fut_traj_value[0,:]), np.rad2deg(fut_traj_value[2,:]), c = 'red')
-            ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.1))
+                squareDiff_last_state[instance] = np.sum(np.square(np.rad2deg(x_opt_OSAD[[0,2], -1]) - np.rad2deg(x_opt_simpleMass[[0,2], -1])))
 
-            plt.show()
-            
-            time_duration[instance] = time.time() - time_start
+                plt.show()
+            else:   
+                # if one of the two optimizations did not converge, repeat one more time with new random initial condition
+                instance = instance - 1
 
-        
-        print ("avg time: ", np.round(time_duration.sum()/instances, 3))
+            print("RMSE final pos: ", np.mean(np.sqrt(squareDiff_last_state)))
+
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1375,29 +1407,36 @@ if __name__ == '__main__':
         opensimAD_ID = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_ID.casadi'))
         opensimAD_FD = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_FD.casadi'))
 
-        nlps_instance = nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
+        nlps_instance_simpleMass = nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
+        nlps_instance_OSAD = nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
 
-        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
+        nlps_instance_simpleMass.setTimeHorizonAndDiscretization(N = 10, T = 1)
+        nlps_instance_OSAD.setTimeHorizonAndDiscretization(N = 10, T = 1)
 
         x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
-        nlps_instance.initializeStateVariables(x)
+        nlps_instance_simpleMass.initializeStateVariables(x)
+        nlps_instance_OSAD.initializeStateVariables(x)
 
         u = ca.MX.sym('u', 3)   # control vector: [tau_theta, tau_psi], in Nm (along the DoFs of the GH joint)  
-        nlps_instance.initializeControlVariables(u)
+        nlps_instance_simpleMass.initializeControlVariables(u)
+        nlps_instance_OSAD.initializeControlVariables(u)
 
         # define the constraints
         u_max = 1e-5
         u_min = -1e-5
         constraint_list = {'u_max':u_max, 'u_min':u_min}
-        nlps_instance.setConstraints(constraint_list)
+        nlps_instance_simpleMass.setConstraints(constraint_list)
+        nlps_instance_OSAD.setConstraints(constraint_list)
 
         # define order of polynomials and collocation points for direct collocation 
         d = 3
         coll_type = 'legendre'
-        nlps_instance.populateCollocationMatrices(d, coll_type)
+        nlps_instance_simpleMass.populateCollocationMatrices(d, coll_type)
+        nlps_instance_OSAD.populateCollocationMatrices(d, coll_type)
 
         # for now, there is no cost function
-        nlps_instance.setCostFunction(0)
+        nlps_instance_simpleMass.setCostFunction(0)
+        nlps_instance_OSAD.setCostFunction(0)
 
         # choose solver and set its options
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
@@ -1430,18 +1469,20 @@ if __name__ == '__main__':
         # opts["debug"] = True
 
         
-        nlps_instance.setSolverOptions(solver, opts)
+        nlps_instance_simpleMass.setSolverOptions(solver, opts)
+        nlps_instance_OSAD.setSolverOptions(solver, opts)
 
-        nlps_instance.setInitialState(x_0 = np.array(rospy.get_param('/pu/x_0')))
+        nlps_instance_simpleMass.setInitialState(x_0 = np.array(rospy.get_param('/pu/x_0')))
+        nlps_instance_OSAD.setInitialState(x_0 = np.array(rospy.get_param('/pu/x_0')))
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
-        bsn_module.assign_nlps(nlps_instance)
+        bsn_module.assign_nlps(nlps_instance_simpleMass, nlps_instance_OSAD)
 
         # debug OpenSimAD functions
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        # bsn_module.debug_NLPS_formulation()
+        bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
