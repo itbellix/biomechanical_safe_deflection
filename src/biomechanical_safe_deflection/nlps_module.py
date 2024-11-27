@@ -572,7 +572,7 @@ class nlps_module():
         J = 0
 
         # weights of the cost function
-        w_pos = 1
+        w_pos = 4
         discount_factor_pos = 0.9
         w_torque = 1
         discount_factor_torque = 1
@@ -676,7 +676,7 @@ class nlps_module():
             Xddot_s.append(ode[1::2, 0])
 
             # consider acceleration of each collocation point in the cost function
-            J = J + w_acc * ca.sumsqr(ode[1::2, :])     # TODO: maybe use acceleration of one point only!!
+            J = J + w_acc * ca.sumsqr(ode[1::2, 0])     # TODO: maybe use acceleration of one point only!!
 
             # state at the end of collocation interval
             Xk_end = ca.mtimes(Z, self.D)
@@ -755,10 +755,10 @@ class nlps_module():
         J = 0
 
         # weights of the cost function
-        w_pos = 1
+        w_pos = 4
         discount_factor_pos = 0.9
-        w_torque = 4
-        discount_factor_torque = 0.9
+        w_torque = 1
+        discount_factor_torque = 1
         delta_e = 5 # delta ellipse in degrees
 
         # tolerances 

@@ -92,7 +92,11 @@ class BS_net:
         # define the references
         self.x_opt = None
         self.u_opt = None
+        self.x_opt_original_time = None
 
+        self.x_opt_upsampled = None                 # upsampled version of the optimal deflection trajectory
+        self.x_opt_upsampled_time = np.linspace(0, self.time_horizon, int(self.time_horizon*rate)+1)
+        
         # define the timestep for the integrator (in the trajectory optimization structure)
         self.time_horizon = 1
 
@@ -209,7 +213,7 @@ class BS_net:
 
         # variables needed to play a sound when the robot takes control
         self.frequency = 440
-        self.duration_sound = 1.0       # 1 second, meaning sound is produced when robot moves
+        self.duration_sound = rospy.Duration(1.0).to_sec()       # 1 second, meaning sound is produced when robot moves
         self.sample_rate = 44100
         t = np.linspace(0, self.duration_sound, int(self.sample_rate * self.duration_sound), False)
         wave = 0.5 * np.sin(2 * np.pi * self.frequency * t)
@@ -324,6 +328,9 @@ class BS_net:
 
         # time horizon for the prediction
         self.time_horizon = config.time_horizon
+        self.x_opt_original_time = np.linspace(0, self.time_horizon, 11)    # TODO: hardcoded value for 11!
+        self.x_opt_upsampled_time = np.linspace(0, self.time_horizon, int(self.time_horizon*200)+1)
+        self.x_opt_upsampled = np.zeros((6, int(self.time_horizon*200)+1))
 
         # the previous time horizon has an effect also on the sound produced
         # variables needed to play a sound when the robot takes control
@@ -541,12 +548,7 @@ class BS_net:
         the computations/publishing to be performed, such that this happens only if the robot controller needs it.
         """
         # frequency of discretization of the future human movement is used
-        if self.interaction_mode == 2:
-            # if we are using the solution from the NLPS, then be coherent with the discretization
-            rate = rospy.Rate(1/self.time_horizon/self.nlps.N)
-        else:
-            # otherwise, run at the expected frequency
-            rate = self.ros_rate
+        rate = self.ros_rate
 
         while not rospy.is_shutdown():
             if self.flag_pub_trajectory:    # perform the computations only if needed
@@ -560,19 +562,16 @@ class BS_net:
                             cmd_shoulder_pose = self.x_opt[0::2, 0]
                             self.x_opt = np.delete(self.x_opt, obj=0, axis=1)   # delete the first column
 
-                            if self.u_opt is not None:
-                                cmd_torques = self.u_opt[:,0]
-                                self.u_opt = np.delete(self.u_opt, obj=0, axis=1)
-                            else:
-                                cmd_torques = None
-
                         else:
                             # If there is only one element left, keep picking it
                             cmd_shoulder_pose = self.x_opt[0::2, 0]
-                            if self.u_opt is not None:
-                                cmd_torques = self.u_opt[:,0]
-                            else:
-                                cmd_torques = None
+
+                        # torques are not considered for the moment
+                        cmd_torques = None
+                        # this command would allow to retrieve the necessary torques at the human joint
+                        # to keep the current state without accelerating -> model-based gravity compensation
+                        # However, if we can't compute the interaction forces this makes no sense
+                        # cmd_torques = opensimAD_ID(np.concatenate((self.x_opt[:,0], np.zeros((3,))))).full().reshape((3,1))
 
                         self.publishCartRef(cmd_shoulder_pose, cmd_torques, base_R_sh)
 
@@ -889,16 +888,19 @@ class BS_net:
         """
         This function takes care of embedding the NLP problem for planning on strain maps into the BSN.
         """
+        self.nlps = nlps_object_1
         self.nlps_simpleMass = nlps_object_1
         self.nlps_OSAD = nlps_object_2
 
         # the overall NLP problem is formulated, meaning that its structure is determined based on the
         # previous inputs
+        self.nlps.formulateNLP_simpleMass()
         self.nlps_simpleMass.formulateNLP_simpleMass()
         self.nlps_OSAD.formulateNLP_newVersion()
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
         # both the function and the inputs it needs are initialized here
+        self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuesses()
         self.mpc_iter_simpleMass, self.input_mpc_call_simpleMass = self.nlps_simpleMass.createOptimalMapWithoutInitialGuesses()
         self.mpc_iter_OSAD, self.input_mpc_call_OSAD = self.nlps_OSAD.createOptimalMapWithoutInitialGuesses()
 
@@ -1078,12 +1080,21 @@ class BS_net:
         else:
             # if not, then we run a simple optimization problem to find the optimal trajectory to avoid the unsafe areas.
             try:
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps_simpleMass.N)
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter_simpleMass(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps_simpleMass.N)
 
                 # note the order for reshape!
                 x_opt = x_opt.full().reshape((6, self.nlps_simpleMass.N+1), order='F')
                 traj_opt = x_opt.reshape((6*(self.nlps_simpleMass.N+1), 1))
-                self.x_opt = x_opt
+                
+                # we recenter the optimal trajectory on the current point 
+                # (TODO: actually not necessary since elapsed time is about 10 ms so position has not changed much)
+                # x_opt_centered = np.subtract(x_opt, x_opt[:,[0]]) + self.state_values_current[0:6, np.newaxis]
+
+                # we need to interpolate (linearly) the resulting trajectory
+                self.x_opt_upsampled[0,:] = np.interp(self.x_opt_upsampled_time, self.x_opt_original_time, x_opt[0, :])
+                self.x_opt_upsampled[2,:] = np.interp(self.x_opt_upsampled_time, self.x_opt_original_time, x_opt[2, :])
+                self.x_opt_upsampled[4,:] = np.interp(self.x_opt_upsampled_time, self.x_opt_original_time, x_opt[4, :])
+                self.x_opt = self.x_opt_upsampled
                 self.u_opt = None       # TODO: we are ignoring u_opt for now
             
             except:
