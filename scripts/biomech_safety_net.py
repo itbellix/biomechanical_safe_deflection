@@ -5,34 +5,38 @@ import rospy
 import time
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-import utilities_TO as utils_TO
-import utilities_casadi as utils_ca
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize_scalar
-import pickle
-from std_msgs.msg import Float64MultiArray, Bool
+from std_msgs.msg import Float64MultiArray, Bool, Float32MultiArray
 import threading
+import simpleaudio as sa
+
+import dynamic_reconfigure.client
 
 # import parser
 import argparse
 
 # import the strain visualizer
-import realTime_strainMap_visualizer as sv
+from biomechanical_safe_deflection.realTime_strainMap_visualizer import RealTimeStrainMapVisualizer
 
 # import the nlps_module
-import nlps_module as nlps
+from biomechanical_safe_deflection.nlps_module import nlps_module
 
 class BS_net:
     """
     Biomechanics Safety Net module.
     """
-    def __init__(self, shared_ros_topics, debug_mode, rate=200, simulation = 'true', speed_estimate:Bool=False):
+    def __init__(self, debug_mode, rate=200, simulation = 'true', speed_estimate:Bool=False):
         """"
         Initialization of the module, given inputs and default values
         """
         # set debug level
         self.debug_mode = debug_mode
         self.simulation = simulation
+
+        # initialize ROS node and set required frequency
+        rospy.init_node('BS_net_node')
+        self.ros_rate = rospy.Rate(rate)
 
         # variables related to the definition of the biomechanical (shoulder) model
         self.pe_boundaries = [-20, 160] # defines the interval of physiologically plausible values for the plane of elevation [deg]
@@ -72,9 +76,8 @@ class BS_net:
         self.in_zone_i = np.array([0])  # are we inside any unsafe zone? 0 = no, 1 = yes
         self.num_params_ellipses = 4    # each unsafe zone will be defined by a 2D ellipse. Its parameters are x0, y0, a^2 and b^2
                                         # the expression for the ellipse is (x-x0)^2/a^2+(y-y0)^2/b^2=1
-
-        # Definition of the "risky strain" (related to INTERACTION MODE 2)
-        self.risky_strain = 2.0      # value of strain [%] that is considered risky
+        self.strain_threshold = rospy.get_param('/pu/strain_threshold') # this will define the "risky strain", which is 
+                                                                        # triggering INTERACTION MODE 2
 
         # definition of the state variables
         self.state_space_names = None               # The names of the coordinates in the model that describe the state-space in which we move
@@ -83,12 +86,19 @@ class BS_net:
         self.state_values_current = None            # The current value of the variables defining the state
         self.speed_estimate = speed_estimate        # Are estimated velocities of the model computed?
                                                     # False: quasi_static assumption, True: updated through measurements
-        
+
         self.future_trajectory = None               # future trajectory of the human model
 
         # define the references
         self.x_opt = None
         self.u_opt = None
+        self.x_opt_original_time = None
+
+        self.x_opt_upsampled = None                 # upsampled version of the optimal deflection trajectory
+        self.x_opt_upsampled_time = np.linspace(0, self.time_horizon, int(self.time_horizon*rate)+1)
+        
+        # define the timestep for the integrator (in the trajectory optimization structure)
+        self.time_horizon = 1
 
         # parameters regarding the muscle activation
         self.varying_activation = False             # initialize the module assuming that the activation will not change
@@ -104,18 +114,32 @@ class BS_net:
         self.ee_cart_stiffness_cmd = None       # stiffness value sent to the Cartesian impedance controller
         self.ee_cart_damping_cmd = None         # damping value sent to the Cartesian impedance controller
 
-        self.ee_cart_stiffness_default = np.array([400, 400, 400, 5, 5, 1]).reshape((6,1))
+        # CIC parameters
+        # (default, high cartesian stiffness and damping)
+        self.trans_stiff_h = rospy.get_param('/pu/ee_trans_stiff_h')
+        rot_stiff_xy_h = rospy.get_param('/pu/ee_rot_stiff_xy_h')
+        rot_stiff_z_h = rospy.get_param('/pu/ee_rot_stiff_z_h')
+        self.ee_cart_stiffness_default = np.array([self.trans_stiff_h, self.trans_stiff_h, self.trans_stiff_h,
+                                                   rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6,1))
         self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
 
-        self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
+        # (low cartesian stiffness and damping)
+        trans_stiff_l = rospy.get_param('/pu/ee_trans_stiff_l')
+        rot_stiff_xy_l = rospy.get_param('/pu/ee_rot_stiff_xy_l')
+        rot_stiff_z_l = rospy.get_param('/pu/ee_rot_stiff_z_l')
+        self.ee_cart_stiffness_low = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                               rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
         self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
 
-        self.ee_cart_damping_dampVel_baseline = np.array([35, 35, 35, 10, 10, 1]).reshape((6,1))
+        # self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
+        # self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
 
-        self.ee_cart_stiffness_dampVel_fixed = np.array([100, 100, 100, 5, 5, 1]).reshape((6,1))
-        self.ee_cart_damping_dampVel_fixed = np.array([80, 80, 80, 10, 10, 1]).reshape((6,1))
+        # self.ee_cart_damping_dampVel_baseline = np.array([35, 35, 35, 10, 10, 1]).reshape((6,1))
 
-        self.max_cart_damp = 70                # max value of linear damping allowed
+        # self.ee_cart_stiffness_dampVel_fixed = np.array([100, 100, 100, 5, 5, 1]).reshape((6,1))
+        # self.ee_cart_damping_dampVel_fixed = np.array([80, 80, 80, 10, 10, 1]).reshape((6,1))
+
+        # self.max_cart_damp = 70                # max value of linear damping allowed
 
 
         # filter the reference that is generated, to avoid noise injection from the human-pose estimator
@@ -126,39 +150,37 @@ class BS_net:
         self.filter_initialized = False             # has the filter been initialized already?
 
         # initialize the visualization module for the strain maps
-        self.strain_visualizer = sv.RealTimeStrainMapVisualizer(self.X_norm, self.Y_norm, self.num_params_gaussian, self.pe_boundaries, self.se_boundaries)
+        self.strain_visualizer = RealTimeStrainMapVisualizer(self.X_norm, self.Y_norm, self.num_params_gaussian, self.pe_boundaries, self.se_boundaries)
 
         # initialize the NLP on strain maps, together with the equivalent CasADi function and the input it requires
         self.nlps = None
-        self.mpc_iter = None
-        self.input_mpc_call = None
+        self.mpc_iter_OSAD = None
+        self.input_mpc_call_OSAD = None
+        self.mpc_iter_simpleMass = None
+        self.input_mpc_call_simpleMass = None
 
         self.nlp_count = 0                          # keeps track of the amount of times the NLP is solved
         self.avg_nlp_time = 0                       # average time required for each NLP iteration
         self.failed_count = 0                       # number of failures encountered
 
-        # ROS part
-        # initialize ROS node and set required frequency
-        rospy.init_node('BS_net_node')
-        self.ros_rate = rospy.Rate(rate)
-
         # Create publisher for the cartesian trajectory for the KUKA end-effector
-        self.topic_opt_traj = shared_ros_topics['cartesian_ref_ee']
-        self.pub_trajectory = rospy.Publisher(self.topic_opt_traj, Float64MultiArray, queue_size=1)
+        self.topic_ref_traj = rospy.get_param('/rostopic/cartesian_ref_ee')
+        self.pub_trajectory = rospy.Publisher(self.topic_ref_traj, Float64MultiArray, queue_size=1)
         self.flag_pub_trajectory = False    # flag to check if trajectory is being published (default: False = no publishing)
         
         # Create the publisher for the unused z_reference
         # It will publish the uncompensated z reference when running a real experiment,
         # and the gravity compensated reference when running in simulation.
-        self.topic_z_level = shared_ros_topics['z_level']
+        self.topic_z_level = rospy.get_param('/rostopic/z_level')
         self.pub_z_level = rospy.Publisher(self.topic_z_level, Float64MultiArray, queue_size=1)
 
         # Create the publisher dedicated to stream the optimal trajectories and controls
-        self.topic_optimization_output = shared_ros_topics['optimization_output']
-        self.pub_optimization_output = rospy.Publisher(self.topic_optimization_output, Float64MultiArray, queue_size=1)
+        self.topic_optimization_output = rospy.get_param('/rostopic/optimization_output')
+        self.pub_optimization_output = rospy.Publisher(self.topic_optimization_output, Float32MultiArray, queue_size=1)
+        self.msg_opt = Float32MultiArray()
 
         # Create a subscriber to listen to the current value of the shoulder pose
-        self.topic_shoulder_pose = shared_ros_topics['estimated_shoulder_pose']
+        self.topic_shoulder_pose = rospy.get_param('/rostopic/estimated_shoulder_pose')
         self.sub_curr_shoulder_pose = rospy.Subscriber(self.topic_shoulder_pose, Float64MultiArray, self._shoulder_pose_cb, queue_size=1)
         self.flag_receiving_shoulder_pose = False       # flag indicating whether the shoulder pose is being received
 
@@ -169,11 +191,153 @@ class BS_net:
 
         # create a subscriber to catch when the trajectory optimization should be running
         self.flag_run = False
-        self.sub_run= rospy.Subscriber(shared_ros_topics['request_reference'], Bool, self._flag_run_cb, queue_size=1)
+        self.sub_run= rospy.Subscriber(rospy.get_param('/rostopic/request_reference'), Bool, self._flag_run_cb, queue_size=1)
+        
+        # parameters defining the current human subject
+        self.L_tot = rospy.get_param('/pu/l_arm') + rospy.get_param('/pu/l_brace')
+        self.l_brace = rospy.get_param('/pu/l_brace')
+        # position of the glenohumeral joint center
+        self.estimate_gh_position = rospy.get_param('/pu/estimate_gh_position')  # should we estimate continuously the GH center position?
+        self.position_gh_in_base = np.array([rospy.get_param('/pu/p_gh_in_base_x'), 
+                                             rospy.get_param('/pu/p_gh_in_base_y'), 
+                                             rospy.get_param('/pu/p_gh_in_base_z')])
+        # ar offset if brace is not aligned with robot's EE axis
+        self.ar_offset = rospy.get_param('/pu/ar_offset')
 
-        # create a thread to catch the input from teh user, who will select the robot's interaction mode
-        self.interaction_mode = 0
-        self.input_thread = threading.Thread(target=self.input_thread_fnc, daemon=True)
+        # interaction mode dictating the behaviour of the robot
+        self.interaction_mode = rospy.get_param('/pu/interaction_mode')
+
+        # create a dynamic_reconfigure client to update parameters when they change (from the Parameter Updater node '/pu')
+        dynamic_reconfigure.client.Client("pu", timeout=None, config_callback=self._dyn_rec_cb)
+        # parameters that can be modified at execution time are the ones under the '/pu/' namespace
+
+        # variables needed to play a sound when the robot takes control
+        self.frequency = 440
+        self.duration_sound = rospy.Duration(1.0).to_sec()       # 1 second, meaning sound is produced when robot moves
+        self.sample_rate = 44100
+        t = np.linspace(0, self.duration_sound, int(self.sample_rate * self.duration_sound), False)
+        wave = 0.5 * np.sin(2 * np.pi * self.frequency * t)
+        self.audio = (wave * 32767).astype(np.int16)
+
+
+    def _shoulder_pose_cb(self, data):
+        """
+        Callback receiving and processing the current shoulder pose.
+        """
+        if not self.flag_receiving_shoulder_pose:       # if this is the first time we receive something, update flag
+            self.flag_receiving_shoulder_pose = True
+
+        # retrieve the current state as estimated on the robot's side
+        self.state_values_current = np.array(data.data[0:9])        # update current pose
+        # this is pe, pe_dot, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
+        
+        if self.estimate_gh_position:
+            # retrieve the current pose of the shoulder/glenohumeral center in the base frame
+            self.position_gh_in_base = np.array(data.data[9:12])
+
+        if not self.speed_estimate:                                 # choose whether we use the velocity estimate or not
+            self.state_values_current[1::2] = 0
+
+        time_now = time.time()
+
+        self.current_ee_pose = np.array(data.data[-3:])   # update estimate of where the robot is now (last 3 elements)
+
+        # set up a logic that allows to start and update the visualization of the current strainmap at a given frequency
+        # We set this fixed frequency to be 10 Hz
+        if np.round(time_now-np.fix(time_now), 2) == np.round(time_now-np.fix(time_now),1):
+            if self.future_trajectory is None:
+                self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
+                                                    pose_current = self.state_values_current[[0,2]], 
+                                                    reference_current = self.x_opt[[0,2],:],
+                                                    future_trajectory = None,
+                                                    goal_current = np.deg2rad(np.array([70, 90])), 
+                                                    vel_current = self.state_values_current[[1,3]],
+                                                    ar_current = None)
+            else:
+                    self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
+                                                    pose_current = self.state_values_current[[0,2]], 
+                                                    reference_current = self.x_opt[[0,2],:],
+                                                    future_trajectory = self.future_trajectory[[0,2],:],
+                                                    goal_current = np.deg2rad(np.array([70, 90])),
+                                                    vel_current = self.state_values_current[[1,3]],
+                                                    ar_current = None)
+
+
+    def _flag_run_cb(self, data):
+        """
+        This callback catches the boolean message that is published on a default topic, informing whether the robot wants
+        to receive new, optimized references or not.
+        """
+        self.flag_run = data.data
+
+
+    def _dyn_rec_cb(self, config):
+        """
+        This callback is used to update values of parameters changed through the dynamic_reconfigure package
+        """
+        if self.debug_mode:
+            rospy.loginfo("""l_arm: {l_arm},
+                    p_gh:[{p_gh_in_base_x}, {p_gh_in_base_y}, {p_gh_in_base_z}],
+                    high cart stiff:[{ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_trans_stiff_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_xy_h}, {ee_rot_stiff_z_h}],
+                    low cart stiff:[{ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_trans_stiff_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_xy_l}, {ee_rot_stiff_z_l}],
+                    increase damping by x {damp_ratio},
+                    mode:{interaction_mode}, 
+                    task:{task}, 
+                    execute:{execute_program}""".format(**config))
+
+        # Use config values directly instead of rospy.get_param
+        self.strain_threshold = config.strain_threshold
+
+        # Update Cartesian Impedance Controller parameters from config
+        self.trans_stiff_h = config.ee_trans_stiff_h
+        rot_stiff_xy_h = config.ee_rot_stiff_xy_h
+        rot_stiff_z_h = config.ee_rot_stiff_z_h
+        self.ee_cart_stiffness_default = np.array([self.trans_stiff_h, self.trans_stiff_h, self.trans_stiff_h,
+                                                   rot_stiff_xy_h, rot_stiff_xy_h, rot_stiff_z_h]).reshape((6, 1))
+        self.ee_cart_damping_default = 2 * np.sqrt(self.ee_cart_stiffness_default)
+
+        trans_stiff_l = config.ee_trans_stiff_l
+        rot_stiff_xy_l = config.ee_rot_stiff_xy_l
+        rot_stiff_z_l = config.ee_rot_stiff_z_l
+        self.ee_cart_stiffness_low = np.array([trans_stiff_l, trans_stiff_l, trans_stiff_l,
+                                               rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6, 1))
+        self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
+
+        self.damping_ratio_deflection = config.damp_ratio
+
+        # Gaussian parameters
+        self.all_params_gaussians = np.array([config.amplitude,
+                                              config.x0 / 160,
+                                              config.y0 / 144,
+                                              config.sigma_x / 160,
+                                              config.sigma_y / 144,
+                                              config.strain_offset])
+
+        # Ellipse parameters
+        self.all_params_ellipses = np.array([config.x0,
+                                             config.y0,
+                                             config.sigma_x ** 2,
+                                             config.sigma_y ** 2])
+
+        # User information parameters
+        self.L_tot = config.l_arm + self.l_brace
+        self.position_gh_in_base = np.array([config.p_gh_in_base_x, config.p_gh_in_base_y, config.p_gh_in_base_z])
+
+        # Interaction mode
+        self.interaction_mode = config.interaction_mode
+
+        # time horizon for the prediction
+        self.time_horizon = config.time_horizon
+        self.x_opt_original_time = np.linspace(0, self.time_horizon, 11)    # TODO: hardcoded value for 11!
+        self.x_opt_upsampled_time = np.linspace(0, self.time_horizon, int(self.time_horizon*200)+1)
+        self.x_opt_upsampled = np.zeros((6, int(self.time_horizon*200)+1))
+
+        # the previous time horizon has an effect also on the sound produced
+        # variables needed to play a sound when the robot takes control
+        self.duration_sound = config.time_horizon
+        t = np.linspace(0, self.duration_sound, int(self.sample_rate * self.duration_sound), False)
+        wave = 0.5 * np.sin(2 * np.pi * self.frequency * t)
+        self.audio = (wave * 32767).astype(np.int16)
 
 
     def setCurrentEllipseParams(self, all_params_ellipse):
@@ -202,7 +366,7 @@ class BS_net:
         self.num_gaussians = len(self.all_params_gaussians)//self.num_params_gaussian    # find the number of gaussians employed
 
 
-    def publishCartRef(self, shoulder_pose_ref, torque_ref, base_R_sh, dist_gh_elbow):
+    def publishCartRef(self, shoulder_pose_ref, torque_ref, base_R_sh):
         """"
         This function publishes a given reference shoulder state as the equivalent 6D cartesian pose corresponding
         to the position of the elbow tip, expressed the world frame. The center of the shoulder in this frame needs 
@@ -217,8 +381,6 @@ class BS_net:
               shoulder elevation (output of the trajectory optimization step)
             - base_R_sh: rotation matrix defining the orientation of the shoulder frame wrt the world frame
                          (as a scipy.spatial.transform.Rotation object)
-            - dist_gh_elbow: the vector expressing the distance of the elbow tip from the GH center, expressed in the 
-                             shoulder frame when plane of elevation = shoulder elevation =  axial rotation= 0
 
         The positions and distances must be expressed in meters, and the rotations in radians.
         """
@@ -228,27 +390,28 @@ class BS_net:
         ar = shoulder_pose_ref[2]
 
         # define the required rotations
-        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar-ar_offset)
+        base_R_elb = base_R_sh*R.from_euler('y', pe)*R.from_euler('x', -se)*R.from_euler('y', ar - self.ar_offset)
 
         base_R_ee = base_R_elb * R.from_euler('x', -np.pi/2)
 
         euler_angles_cmd = base_R_ee.as_euler('xyz') # store also equivalent Euler angles
 
         # find position for the end-effector origin
-        if experimental_params['estimate_gh_position'] and self.flag_receiving_shoulder_pose:
+        dist_gh_elbow = np.array([0, -self.L_tot, 0])
+        if self.estimate_gh_position and self.flag_receiving_shoulder_pose:
             ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + self.position_gh_in_base
         else:
-            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + experimental_params['p_gh_in_base']
+            ref_cart_point = np.matmul(base_R_elb.as_matrix(), dist_gh_elbow) + self.position_gh_in_base
 
         # modify the reference along the Z direction, to account for the increased interaction force
         # due to the human arm resting on the robot. We do this only if we are not in simulation.
         if torque_ref is not None:
-            k_z = ee_stiffness[2]
+            k_z = self.trans_stiff_h
             se_estimated = self.state_values_current[2]
             torque_se = torque_ref[1]
             z_current = self.current_ee_pose[2]
-
-            new_z_ref = z_current + torque_se/(k_z * experimental_params['L_tot'] * np.sin(se_estimated))
+                                                                                    # elbow tip
+            new_z_ref = z_current + torque_se/((k_z+1) * self.L_tot * np.sin(se_estimated))
             
             # append new z reference (in this way, we can filter both the new and the old)
             ref_cart_point = np.hstack((ref_cart_point, new_z_ref))
@@ -320,22 +483,20 @@ class BS_net:
         self.pub_z_level.publish(message_z)
         
 
-    def publishInitialPoseAsCartRef(self, shoulder_pose_ref, position_gh_in_base, base_R_sh, dist_gh_elbow):
+    def publishInitialPoseAsCartRef(self, shoulder_pose_ref, base_R_sh):
         """"
         This function publishes a given reference shoulder state as the equivalent 6D cartesian pose corresponding
         to the position of the elbow tip, expressed the world frame. The center of the shoulder in this frame needs 
         to be given by the user, so that they need to specify the position of the GH joint center in the world frame 
         (px, py, pz), and the orientation of the shoulder reference frame (i.e., the scapula reference frame) as well.
-        The underlying assumption is that the scapula/shoulder frame remains fixed over time wrt the world frame.
+        The underlying assumption is that the orientation of the scapula/shoulder frame remains fixed over time 
+        wrt the world frame.
 
         The inputs are:
             - shoulder_pose_ref: 3x1 numpy array, storing the values of plane of elevation, shoulder 
               elevation and axial rotation at a given time instant
-            - position_gh_in_base: the coordinates (px, py, pz) as a numpy array
             - base_R_sh: rotation matrix defining the orientation of the shoulder frame wrt the world frame
                          (as a scipy.spatial.transform.Rotation object)
-            - dist_gh_elbow: the vector expressing the distance of the elbow tip from the GH center, expressed in the 
-                             shoulder frame when plane of elevation = shoulder elevation =  axial rotation= 0
 
         The positions and distances must be expressed in meters, and the rotations in radians.
 
@@ -349,70 +510,16 @@ class BS_net:
         shoulder_state[0::2] = shoulder_pose_ref.reshape(-1, 1)
         self.x_opt = shoulder_state
 
-        # fix the position of the center of the shoulder/glenohumeral joint
-        self.position_gh_in_base = experimental_params['p_gh_in_base']
-
         # perform extra things if this is the first time we execute this
         if not self.flag_pub_trajectory:
             # We need to set up the structure to deal with the new thread, to allow 
             # continuous publication of the optimal trajectory
             self.publish_thread = threading.Thread(target=self.publish_continuous_trajectory, 
-                                                    args = (base_R_sh, dist_gh_elbow))   # creating the thread
+                                                    args = (base_R_sh,))   # creating the thread
             
             self.publish_thread.daemon = True   # this allows to terminate the thread when the main program ends
             self.flag_pub_trajectory = True     # update flag
             self.publish_thread.start()         # start the publishing thread
-
-
-    def _shoulder_pose_cb(self, data):
-        """
-        Callback receiving and processing the current shoulder pose.
-        """
-        if not self.flag_receiving_shoulder_pose:       # if this is the first time we receive something, update flag
-            self.flag_receiving_shoulder_pose = True
-
-        # retrieve the current state as estimated on the robot's side
-        self.state_values_current = np.array(data.data[0:9])        # update current pose
-        # this is pe, pe_dot, se, se_dot, ar, ar_dot, pe_ddot, se_ddot, ar_ddot
-        
-        if experimental_params['estimate_gh_position']:
-            # retrieve the current pose of the shoulder/glenohumeral center in the base frame
-            self.position_gh_in_base = np.array(data.data[9:12])
-
-        if not self.speed_estimate:                                 # choose whether we use the velocity estimate or not
-            self.state_values_current[1::2] = 0
-
-        time_now = time.time()
-
-        self.current_ee_pose = np.array(data.data[-3:])   # update estimate of where the robot is now (last 3 elements)
-
-        # set up a logic that allows to start and update the visualization of the current strainmap at a given frequency
-        # We set this fixed frequency to be 10 Hz
-        if np.round(time_now-np.fix(time_now), 2) == np.round(time_now-np.fix(time_now),1):
-            if self.future_trajectory is None:
-                self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
-                                                    pose_current = self.state_values_current[[0,2]], 
-                                                    reference_current = self.x_opt[[0,2],:],
-                                                    future_trajectory = None,
-                                                    goal_current = None, 
-                                                    vel_current = self.state_values_current[[1,3]],
-                                                    ar_current = None)
-            else:
-                    self.strain_visualizer.updateStrainMap(list_params = self.all_params_gaussians, 
-                                                    pose_current = self.state_values_current[[0,2]], 
-                                                    reference_current = self.x_opt[[0,2],:],
-                                                    future_trajectory = self.future_trajectory[[0,2],:],
-                                                    goal_current = None, 
-                                                    vel_current = self.state_values_current[[1,3]],
-                                                    ar_current = None)
-
-
-    def _flag_run_cb(self, data):
-        """
-        This callback catches the boolean message that is published on a default topic, informing whether the robot wants
-        to receive new, optimized references or not.
-        """
-        self.flag_run = data.data
 
     
     def keepRunning(self):
@@ -434,19 +541,14 @@ class BS_net:
         print("Receiving current shoulder pose.")
 
 
-    def publish_continuous_trajectory(self, rot_ee_in_base_0, dist_shoulder_ee):
+    def publish_continuous_trajectory(self, base_R_sh):
         """
         This function picks the most recent information regarding the optimal shoulder trajectory,
         converts it to end effector space and publishes the robot reference continuously. A flag enables/disables
         the computations/publishing to be performed, such that this happens only if the robot controller needs it.
         """
         # frequency of discretization of the future human movement is used
-        if self.interaction_mode == 3:
-            # if we are using the solution from the NLPS, then be coherent with the discretization
-            rate = rospy.Rate(1/self.nlps.h)
-        else:
-            # otherwise, run at the expected frequency
-            rate = self.ros_rate
+        rate = self.ros_rate
 
         while not rospy.is_shutdown():
             if self.flag_pub_trajectory:    # perform the computations only if needed
@@ -460,34 +562,20 @@ class BS_net:
                             cmd_shoulder_pose = self.x_opt[0::2, 0]
                             self.x_opt = np.delete(self.x_opt, obj=0, axis=1)   # delete the first column
 
-                            if self.u_opt is not None:
-                                cmd_torques = self.u_opt[:,0]
-                                self.u_opt = np.delete(self.u_opt, obj=0, axis=1)
-                            else:
-                                cmd_torques = None
-
                         else:
                             # If there is only one element left, keep picking it
                             cmd_shoulder_pose = self.x_opt[0::2, 0]
-                            if self.u_opt is not None:
-                                cmd_torques = self.u_opt[:,0]
-                            else:
-                                cmd_torques = None
 
-                        self.publishCartRef(cmd_shoulder_pose, cmd_torques, rot_ee_in_base_0, dist_shoulder_ee)
+                        # torques are not considered for the moment
+                        cmd_torques = None
+                        # this command would allow to retrieve the necessary torques at the human joint
+                        # to keep the current state without accelerating -> model-based gravity compensation
+                        # However, if we can't compute the interaction forces this makes no sense
+                        # cmd_torques = opensimAD_ID(np.concatenate((self.x_opt[:,0], np.zeros((3,))))).full().reshape((3,1))
+
+                        self.publishCartRef(cmd_shoulder_pose, cmd_torques, base_R_sh)
 
             rate.sleep()
-
-
-    def input_thread_fnc(self):
-        while True:
-            try:
-                # Read user input (this happens asynchronously as executed in a thread)
-                interaction_mode = input("Select interaction mode (0, 1, 2 or 3):\n")
-                print(": interaction mode selected")
-                self.interaction_mode = int(interaction_mode)
-            except ValueError:
-                print("Invalid input, please enter a number between 0 and 3")
 
 
     def setReferenceToCurrentPose(self):
@@ -594,18 +682,21 @@ class BS_net:
         """
 
         return (x-px)**2 + (np.sqrt(b_squared* (1 - x**2/a_squared)) - py)**2
-        
+
 
     def monitor_unsafe_zones(self):
         """
-        This function monitors whether we are in any unsafe zones, based on the ellipse parameters
-        obtained by the analytical expression of the strainmaps. In particular:
-            - if we are outside of all the ellipses, the reference point (in the human frame)
-              is set to be the current pose
-            - if we are inside one (or more) ellipses, the reference point is the closest point
-              on the ellipses borders.
-        The corresponding human pose is commanded to the robot, transforming it into EE pose.
-
+        This function monitors the movement of the subject based on the strain maps and the
+        current state of the subject. In particular:
+        - if the subject state corresponds to low strain, low stiffness and damping are used, 
+          and the reference point is the current (human) state
+        - if the current strain level exceeds a "risky" value, then we check in which direction the
+          human is moving. If:
+            - movement happens towards lower-strain areas, low stiffness and damping are used, 
+            and the reference point is the current (human) state
+            - movement happens towards higher-strain areas, damping is increased (with reference velocity=0)
+        - if the current pose is within an unsafe zone, the reference point is set to the closest point
+          on the border of the zone.
 
         The ellipses are defined with model's angles in degrees!
         """
@@ -617,9 +708,14 @@ class BS_net:
 
         # retrieve the current point on the strain map
         # remember that the ellipses are defined in degrees!
+        # retrieve model's current pose and velocity
+        # remember that the strain map is defined in degrees
         pe = np.rad2deg(self.state_values_current[0])
+        pe_dot = np.rad2deg(self.state_values_current[1])
         se = np.rad2deg(self.state_values_current[2])
+        se_dot = np.rad2deg(self.state_values_current[3])
         ar = np.rad2deg(self.state_values_current[4])
+        ar_dot = np.rad2deg(self.state_values_current[5])
 
         # check if (pe, se) is inside any unsafe zone
         self.in_zone_i = np.zeros(num_ellipses)
@@ -643,18 +739,8 @@ class BS_net:
         # now we know if we are inside one (or more ellipses). Given the current shoulder pose (pe, se), we find 
         # the closest point on the surface of the ellipses containing (pe, se).
         num_in_zone = int(self.in_zone_i.sum())
-        if num_in_zone == 0:
-            # if we are not inside any ellipse, then we are safe and the current position is tracked
-            # (we convert back to radians for compatibility with the rest of the code)
-            self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
-
-            # choose Cartesian stiffness and damping for the robot's impedance controller
-            # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
-
-        else:
-            # otherwise check all of the zones in which we are in, and find the closest points
+        if num_in_zone > 0:
+            # if we are inside an unsafe zone, we need to find the closest reference point.
             closest_point = np.nan * np.ones((num_ellipses, 2))
 
             # loop through the ellipses
@@ -701,92 +787,30 @@ class BS_net:
 
                     closest_point[i,:] = np.array([pe_cp, se_cp])
 
-            # extract only the relevant rows from closest_point, retaining the point(s)
-            # on each ellipse that we can consider as a reference
-            closest_point = closest_point[~np.isnan(closest_point).all(axis=1)]
-
-            # check if we are inside multiple ellipses. If so, check which point is really the closest
-            num_points = closest_point.shape[1]>1
-            if num_points:
-                curr_closest_point = closest_point[0, :]
-                curr_d = (curr_closest_point[0]-pe)**2 + (curr_closest_point[1]-se)**2
-
-                for i in range(1, num_points):
-                    new_d = (closest_point[i,0]-pe)**2 + (closest_point[i,1]-se)**2
-                    if new_d < curr_d:
-                        curr_d = new_d
-                        curr_closest_point = closest_point[i, :]
+            # extract only the relevant rows from closest_point, retaining the point that we can consider as a reference
+            closest_point = closest_point[~np.isnan(closest_point).all(axis=1)][0]
 
             # send the closest point on the ellipse border as a reference for the robot
             # we need to reconvert back to radians for compatibility with the rest of the code
-            self.x_opt = np.deg2rad(np.array([curr_closest_point[0], 0, curr_closest_point[1], 0, ar, 0]).reshape((6,1)))
+            self.x_opt = np.deg2rad(np.array([closest_point[0], 0, closest_point[1], 0, ar, 0]).reshape((6,1)))
 
             # choose Cartesian stiffness and damping for the robot's impedance controller
-            # we set high values so that alternative reference is tracked
-            # (the subject will be pulled out of the unsafe zone)
+            # these values can be adjusted by the user to explore different modalities of HRI
+            # (the subject will be pulled out of the unsafe zone with a force proportional to this)
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
-
-    def damp_unsafe_velocities(self):
-        """
-        This function takes care of increasing the damping of the cartesian impedance controller
-        when the subject is traversing high-strain areas.
-        Ideally, damping should be increased if the movement will result in increased strain, and
-        kept low when the movement is "escaping" unsafe areas.
-        """
-        # enable robot's reference trajectory publishing
-        self.flag_pub_trajectory = True
-
-        # retrieve model's current pose and velocity
-        # remember that the strain map is defined in degrees
-        pe = np.rad2deg(self.state_values_current[0])
-        pe_dot = np.rad2deg(self.state_values_current[1])
-        se = np.rad2deg(self.state_values_current[2])
-        se_dot = np.rad2deg(self.state_values_current[3])
-        ar = np.rad2deg(self.state_values_current[4])
-        ar_dot = np.rad2deg(self.state_values_current[5])
-
-        current_strain = 0
-
-        # loop through all of the Gaussians, to obtain the contribution of each of them
-        # to the overall strain corresponding to the current position 
-        for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
-
-            #first, retrieve explicitly the parameters of the function considered in this iteration
-            amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
-            x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
-            y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
-            sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
-            sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
-            offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
-            
-            # then, compute the contribution of this particular Gaussian to the final strainmap
-            # (remember that the strain maps are computed with normalized values!)
-            current_strain += amplitude * np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))+offset
-        
-        # check if the current strain is safe or risky
-        if current_strain <= self.risky_strain:
-            # if the strain is sufficiently low, then we are safe: we set the parameters
-            # for the cartesian impedance controller to produce minimal interaction force with the subject
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
-
         else:
-            # if we are in a risky area, then rapid movement should be limited if it would lead to
-            # increased strain. For this, we calculate the directional derivative of the strain map
-            # at the current location, along the direction given by the current (estimated) velocity.
-            # If the directional derivative is negative, then the movement is still safe. Otherwise,
-            # damping from the robot should be added.
+            # if we are not inside any zones, we should check how much strain corresponds to the current human state
+            # NOTE: if we consider more complex zones, this might not be enough, and we probably need also a metric
+            # accounting for the distance to the closest zone.
 
-            # calculate the directional vector from the estimated velocities
-            vel_on_map = np.array([pe_dot, se_dot]) 
-            norm_vel = vel_on_map / np.linalg.norm(vel_on_map + 1e-6)
+            current_strain = 0
 
-            # calculate the directional derivative on the strain map
-            dStrain_dx = 0
-            dStrain_dy = 0
+            # loop through all of the Gaussians, to obtain the contribution of each of them
+            # to the overall strain corresponding to the current position 
             for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+
                 #first, retrieve explicitly the parameters of the function considered in this iteration
                 amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
                 x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
@@ -794,61 +818,91 @@ class BS_net:
                 sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
                 sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
                 offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
-
-                # then, compute the analytical (partial) derivatives of the strain map and add them
-                dStrain_dx += - amplitude * (pe/self.pe_normalizer - x0) / (sigma_x**2) * \
-                              np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
                 
-                dStrain_dy += - amplitude * (se/self.se_normalizer - y0) / (sigma_y**2) * \
-                              np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
-                
-            
-            dStrain_along_direction = np.dot(np.array([dStrain_dx, dStrain_dy]), norm_vel)
+                # then, compute the contribution of this particular Gaussian to the final strainmap
+                # (remember that the strain maps are computed with normalized values!)
+                current_strain += amplitude * np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))+offset
 
-            # if the directional derivative is negative, then movement is safe (we set low damping)
-            if dStrain_along_direction < 0:
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            if current_strain<=self.strain_threshold:
+                # if the strain is sufficiently low, then we are safe: we set the parameters
+                # for the cartesian impedance controller to produce minimal interaction force with the subject
+                # self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                # self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+                self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+
+                self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
             else:
-                # # here we will change the damping of the interaction. However, we cannot do this without 
-                # # stability problems if we do not change the stiffness too.
+                # if we are in a risky area, then rapid movement should be limited if it would lead to
+                # increased strain. For this, we calculate the directional derivative of the strain map
+                # at the current location, along the direction given by the current (estimated) velocity.
+                # If the directional derivative is negative, then the movement is still safe. Otherwise,
+                # damping from the robot should be added.
 
-                # # I came up with a simple heuristic, in which stiff - stiff_low =  3 x (damp - damp_low)
+                # calculate the directional vector from the estimated velocities
+                vel_on_map = np.array([pe_dot, se_dot]) 
+                norm_vel = vel_on_map / np.linalg.norm(vel_on_map + 1e-6)
 
-                # ratio = (current_strain - self.risky_strain)**2 + 1         # we add + 1 to avoid having damping close to 0
-                # damping  = ratio * self.ee_cart_damping_dampVel_baseline
+                # calculate the directional derivative on the strain map
+                dStrain_dx = 0
+                dStrain_dy = 0
+                for function in range(len(self.all_params_gaussians)//self.num_params_gaussian):
+                    #first, retrieve explicitly the parameters of the function considered in this iteration
+                    amplitude = self.all_params_gaussians[function*self.num_params_gaussian]
+                    x0 = self.all_params_gaussians[function*self.num_params_gaussian+1]
+                    y0 = self.all_params_gaussians[function*self.num_params_gaussian+2]
+                    sigma_x = self.all_params_gaussians[function*self.num_params_gaussian+3]
+                    sigma_y = self.all_params_gaussians[function*self.num_params_gaussian+4]
+                    offset = self.all_params_gaussians[function*self.num_params_gaussian+5]
 
-                # if damping[0] > self.max_cart_damp:
-                #     self.ee_cart_damping_cmd = self.max_cart_damp / damping[0] * damping
-                # else:
-                #     self.ee_cart_damping_cmd  = ratio * self.ee_cart_damping_dampVel_baseline
-
-                # self.ee_cart_stiffness_cmd = 3 * (self.ee_cart_damping_cmd[0] - self.ee_cart_damping_low[0]) * self.ee_cart_stiffness_low
-                # print(self.ee_cart_damping_cmd[0])
+                    # then, compute the analytical (partial) derivatives of the strain map and add them
+                    dStrain_dx += - amplitude * (pe/self.pe_normalizer - x0) / (sigma_x**2) * \
+                                np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
+                    
+                    dStrain_dy += - amplitude * (se/self.se_normalizer - y0) / (sigma_y**2) * \
+                                np.exp(-((pe/self.pe_normalizer-x0)**2/(2*sigma_x**2)+(se/self.se_normalizer-y0)**2/(2*sigma_y**2)))
+                    
                 
-                self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_dampVel_fixed
-                self.ee_cart_damping_cmd = self.ee_cart_damping_dampVel_fixed
-            
+                dStrain_along_direction = np.dot(np.array([dStrain_dx, dStrain_dy]), norm_vel)
 
-        # the current position is set as a reference
-        # (we convert back to radians for compatibility with the rest of the code)
-        self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
+                # if the directional derivative is negative, then movement is safe (we set low damping)
+                if dStrain_along_direction < 0:
+                    # self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                    # self.ee_cart_damping_cmd = self.ee_cart_damping_low
+                    self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+                    self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
+
+                else:
+                    # if the directional derivative is positive, then we have to increase the damping
+                    # Experimentally, damping is adjusted only for the translational part of the controller
+                    # This is manually set to be twice the critical damping
+                    self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
+                    self.ee_cart_damping_cmd = np.concatenate((self.damping_ratio_deflection * self.ee_cart_damping_low[0:3],
+                                                            self.ee_cart_damping_low[3:])).reshape((6,1))
+
+                self.x_opt = np.deg2rad(np.array([pe, 0, se, 0, ar, 0]).reshape((6,1)))
 
 
-    def assign_nlps(self, nlps_object):
+    def assign_nlps(self, nlps_object_1, nlps_object_2 = None):
         """
         This function takes care of embedding the NLP problem for planning on strain maps into the BSN.
         """
-        self.nlps = nlps_object
+        self.nlps = nlps_object_1
+        self.nlps_simpleMass = nlps_object_1
+        self.nlps_OSAD = nlps_object_2
 
         # the overall NLP problem is formulated, meaning that its structure is determined based on the
         # previous inputs
         self.nlps.formulateNLP_simpleMass()
+        self.nlps_simpleMass.formulateNLP_simpleMass()
+        self.nlps_OSAD.formulateNLP_newVersion()
 
         # embed the whole NLP (solver included) into a CasADi function that can be called
         # both the function and the inputs it needs are initialized here
         self.mpc_iter, self.input_mpc_call = self.nlps.createOptimalMapWithoutInitialGuesses()
+        self.mpc_iter_simpleMass, self.input_mpc_call_simpleMass = self.nlps_simpleMass.createOptimalMapWithoutInitialGuesses()
+        self.mpc_iter_OSAD, self.input_mpc_call_OSAD = self.nlps_OSAD.createOptimalMapWithoutInitialGuesses()
 
 
     def predict_future_state_kinematic(self, N, T):
@@ -894,7 +948,7 @@ class BS_net:
         
         for timestep in range(1, N+1):
             # retrieve estimation for future human state at current time step (assuming constant velocity)
-            future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
+            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps_OSAD.N * future_states[1::2, timestep-1]
 
             # check that the estimated point of the trajectory will be safe
             # (for now, this is done in 2D for PE and SE only)
@@ -954,39 +1008,40 @@ class BS_net:
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
             # sleep for the duration of the optimized trajectory
-            rospy.sleep(self.nlps.T)
+            rospy.sleep(self.nlps_OSAD.T)
 
             # decrease stiffness again so that subject can continue their movement
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
 
-    def predict_future_state_simple(self, N, T):
+    def predict_future_state_simple(self):
         """
         A variation with respect to predict_future_state_kinematic, where no optimization is run but only
         geometric rules are applied to find some sort of deflection.
         """
         assert self.state_values_current is not None, "The current state of the human model is unknown"
 
-        # disable robot's reference trajectory publishing
+        # enable robot's reference trajectory publishing
         self.flag_pub_trajectory = True
 
         # retrieve number of (elliptical) unsafe zones present on current strain map
         num_ellipses = int(len(self.all_params_ellipses)/self.num_params_ellipses)
 
-        self.in_zone_i = np.zeros((N+1, num_ellipses))   # initialize counter for unsafe states
+        self.in_zone_i = np.zeros((self.nlps_simpleMass.N+1, num_ellipses))   # initialize counter for unsafe states
 
         # initial state for the human model
         initial_state = self.state_values_current[0:6]
 
         # for the next N time-steps, predict the future states of the human model
-        future_states = np.zeros((6, N+1))
+        future_states = np.zeros((6, self.nlps_simpleMass.N+1))
         future_states[::2, 0] = initial_state[::2]      # initialize the first point of the state trajectory
         future_states[1::2, :] = initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
         
-        for timestep in range(1, N+1):
+        for timestep in range(1, self.nlps_simpleMass.N+1):
             # retrieve estimation for future human state at current time step (assuming constant velocity)
-            future_states[::2, timestep] = future_states[::2, timestep-1] + T/N * future_states[1::2, timestep-1]
+            future_states[::2, timestep] = future_states[::2, timestep-1] + self.time_horizon/self.nlps_simpleMass.N * future_states[1::2, timestep-1]
 
             # check that the estimated point of the trajectory will be safe
             # (for now, this is done in 2D for PE and SE only)
@@ -1018,121 +1073,51 @@ class BS_net:
             # if there is no future state which is unsafe, the current position is tracked
             # choose Cartesian stiffness and damping for the robot's impedance controller
             # we set low values so that subject can move (almost) freely
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
+            self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
             self.x_opt = initial_state.reshape((6,1))
         else:
             # if not, then we run a simple optimization problem to find the optimal trajectory to avoid the unsafe areas.
-            x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, self.future_trajectory, self.all_params_ellipses)
+            try:
+                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter_simpleMass(initial_state, self.future_trajectory, self.all_params_ellipses, self.time_horizon/self.nlps_simpleMass.N)
 
-            # note the order for reshape!
-            traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
-            self.x_opt = traj_opt
-            self.u_opt = None       # TODO: we are ignoring u_opt for now
+                # note the order for reshape!
+                x_opt = x_opt.full().reshape((6, self.nlps_simpleMass.N+1), order='F')
+                traj_opt = x_opt.reshape((6*(self.nlps_simpleMass.N+1), 1))
+                
+                # we recenter the optimal trajectory on the current point 
+                # (TODO: actually not necessary since elapsed time is about 10 ms so position has not changed much)
+                # x_opt_centered = np.subtract(x_opt, x_opt[:,[0]]) + self.state_values_current[0:6, np.newaxis]
+
+                # we need to interpolate (linearly) the resulting trajectory
+                self.x_opt_upsampled[0,:] = np.interp(self.x_opt_upsampled_time, self.x_opt_original_time, x_opt[0, :])
+                self.x_opt_upsampled[2,:] = np.interp(self.x_opt_upsampled_time, self.x_opt_original_time, x_opt[2, :])
+                self.x_opt_upsampled[4,:] = np.interp(self.x_opt_upsampled_time, self.x_opt_original_time, x_opt[4, :])
+                self.x_opt = self.x_opt_upsampled
+                self.u_opt = None       # TODO: we are ignoring u_opt for now
+            
+            except:
+                rospy.loginfo("Optimization failed, no valid trajectory found")
+                traj_opt = None
+
+            # publish the optimized trajectory
+            # create message for output optimization    
+            self.msg_opt.data = traj_opt
+            self.pub_optimization_output.publish(self.msg_opt)
 
             # increase stiffness to actually track the optimal deflected trajectory
+            # values of stiffness can be updated in real-time
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
-            # sleep for the duration of the optimized trajectory
-            rospy.sleep(self.nlps.T)
+            # produce a sound for the duration of the trajectory
+            sa.play_buffer(self.audio, 1, 2, self.sample_rate)
+            rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
 
             # decrease stiffness again so that subject can continue their movement
-            self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-            self.ee_cart_damping_cmd = self.ee_cart_damping_low
-
-
-    def predict_future_state_old(self):
-        """
-        This function is used to predict the future state of the human body, which is found assuming that the human
-        will continue exerting a constant torque along their DoFs. The future trajectory for the human model is saved
-        in the variable x_opt, that can be then visualized for debugging.
-        """
-        assert self.nlps is not None, "The NLP has not been defined yet, cannot continue"
-
-        # disable robot's reference trajectory publishing
-        self.flag_pub_trajectory = False
-
-        # initialize flag to monitor if the solver found an optimal solution
-        failed = 0
-
-        # first, we estimate the current human torques given the current position, velocity and acceleration of the model
-        u_hat_hum = self.nlps.opensimAD_ID(self.state_values_current)[0:2]
-
-        # initial state for the human model
-        initial_state = self.state_values_current[0:6]
-
-        # if we are considering strain in our formulation, add the parameters of the strainmap to the numerical input
-        if self.nlps.num_gaussians>0:
-            params_g1 = self.nlps.all_params_gaussians[0:6]
-            params_g2 = self.nlps.all_params_gaussians[6:12]
-            params_g3 = self.nlps.all_params_gaussians[12:18]
-
-            # solve the NLP problem given the current state of the system (with strain information)
-            # we solve the NLP, and catch if there was an error. If so, notify the user and retry
-            try:
-                time_start = time.time()
-                x_opt, u_opt, j_opt, _, strain_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4], params_g1, params_g2, params_g3)
-                time_execution = time.time()-time_start
-                strain_opt = strain_opt.full().reshape(1, self.nlps.N+1, order='F')
-
-            except Exception as e:
-                print('Solver failed:', e)
-                print('retrying ...')
-                failed = 1
-
-        else:
-            # solve the NLP problem given the current state of the system (without strain information)
-            # we solve the NLP, and catch if there was an error. If so, notify the user and retry
-            try:
-                time_start = time.time()
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(initial_state, u_hat_hum, self.state_values_current[4])
-                time_execution = time.time() - time_start
-
-                strain_opt = np.nan * np.ones((1, self.nlps.N+1))  # still fill the optimal strain values with NaNs
-
-            except Exception as e:
-                print('Solver failed:', e)
-                print('retrying ...')
-                failed = 1
-
-        self.nlp_count += 1         # update the number of iterations until now
-        self.failed_count += failed # update number of failed iterations
-
-        # only do the remaining steps if we have a new solution
-        if not failed:
-            # convert the solution to numpy arrays, and store them to be processed
-            x_opt = x_opt.full().reshape(self.nlps.dim_x, self.nlps.N+1, order='F')
-            u_opt = u_opt.full().reshape(self.nlps.dim_u, self.nlps.N, order='F')
-
-            # save the strain value
-            self.strain_opt = strain_opt
-            
-            # update the optimal values that are stored in the BSN module. 
-            # They can be accessed only if there is no other process that is modifying them
-            with self.x_opt_lock:
-                # self.x_opt = x_opt[:, 1::]      # the first point is discarded, as it is the current one
-                self.x_opt = x_opt[:, 2::]      # the first points are discarded, to compensate for relatively low stiffness of the controller
-                self.u_opt = u_opt[:,1::]       # same as above, to guarantee consistency
-
-            # update average running time
-            self.avg_nlp_time = ((self.avg_nlp_time * self.nlp_count) + time_execution) / (self.nlp_count+1)
-
-            # update the optimal values that are stored in the NLPS module as well
-            self.nlps.x_opt = x_opt      
-            self.nlps.u_opt = u_opt
-
-            # publish the optimal values to a ROS topic, so that they can be recorded during experiments
-            message = Float64MultiArray()
-            u_opt = np.concatenate((u_opt, np.atleast_2d(np.nan*np.ones((self.nlps.dim_u,1)))), axis = 1)  # adding one NaN to match dimensions of other arrays
-            activation = self.activation_level*self.delta_activation + self.min_activation
-            message.data = np.hstack((np.vstack((x_opt, u_opt, strain_opt)).flatten(), activation))    # stack the three outputs in a single message (plus activation), and flatten it for publishing
-            self.pub_optimization_output.publish(message)
-
-            return u_opt, x_opt, j_opt, strain_opt
-
-            # TODO is now to test that the current acceleration is received and properly used by f_ID,AD
+            self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
+            self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
 
     def debug_sysDynamics(self):
@@ -1237,7 +1222,8 @@ class BS_net:
     def debug_NLPS_formulation(self):
         # first solve the nlp problem
         time_start = time.time()
-        x_opt, u_opt, sol, x_opt_coll = self.nlps.solveNLPOnce()
+        self.nlps_simpleMass.solveNLPOnce()
+        self.nlps_OSAD.solveNLPOnce()
         time_execution_0 = time.time() - time_start
 
         print ("execution with Opti: ", np.round(time_execution_0,3))
@@ -1290,14 +1276,16 @@ class BS_net:
         rng = np.random.default_rng()
         instances = 100
 
-        time_duration = np.zeros((instances, 1))
+        time_duration_simpleMass = np.zeros((instances, 1))
+        time_duration_OSAD = np.zeros((instances, 1))
+        squareDiff_last_state = np.zeros((instances, 1))
 
         for instance in range(instances):
-            pe_init = np.deg2rad(rng.uniform(low = 55, high = 60))
+            pe_init = np.deg2rad(rng.uniform(low = 78, high = 82))
             pe_dot_init = np.deg2rad(rng.uniform(low = -15, high = -5))
 
-            se_init = np.deg2rad(rng.uniform(low = 95, high = 105))
-            se_dot_init = np.deg2rad(rng.uniform(low = -15, high = 5))
+            se_init = np.deg2rad(rng.uniform(low = 80, high = 100))
+            se_dot_init = np.deg2rad(rng.uniform(low = -15, high = 15))
 
             ar_init = np.deg2rad(rng.uniform(low = -60, high = 60))
             ar_dot_init = np.deg2rad(0)
@@ -1309,90 +1297,117 @@ class BS_net:
             # sim_initial_state =self.nlps.x_0
 
             # first, we estimate the future states given the initial one
-            fut_traj_value = np.zeros((self.nlps.dim_x, self.nlps.N+1))
+            fut_traj_value = np.zeros((self.nlps_simpleMass.dim_x, self.nlps_simpleMass.N+1))
             fut_traj_value[:,0] = sim_initial_state
             fut_traj_value[1::2, :] = sim_initial_state[1::2][:, np.newaxis]    # velocities are assumed to be constant
-            for timestep in range(1, self.nlps.N+1):
-                fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps.h * fut_traj_value[1::2, timestep-1]
+            for timestep in range(1, self.nlps_simpleMass.N+1):
+                fut_traj_value[::2, timestep] = fut_traj_value[::2, timestep-1] + self.nlps_simpleMass.h * fut_traj_value[1::2, timestep-1]
 
-            # solve the NLP once
-            time_start = time.time()
+            # solve the problem with simpleMass
+            time_start_simpleMass = time.time()
             try:
-                x_opt, u_opt, _,  j_opt, xddot_opt = self.mpc_iter(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses)
+                x_opt_simpleMass, u_opt, _,  j_opt, xddot_opt = self.mpc_iter_simpleMass(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses, self.time_horizon/self.nlps_simpleMass.N)
+                x_opt_simpleMass = x_opt_simpleMass.full().reshape((6, 11), order='F')
+                unfeasible_simpleMass = 0
             except:
-                RuntimeError("Optimization not converged")
+                RuntimeError("Optimization simpleMass not converged")
+                unfeasible_simpleMass = 1
 
-            # print the solution
-            x_opt = x_opt.full().reshape((6, 11), order='F')
+            time_duration_simpleMass[instance] = time.time() - time_start_simpleMass
+
+            # solve the problem with OSAD
+            time_start_OSAD = time.time()
+            try:
+                x_opt_OSAD, u_opt, _,  j_opt, xddot_opt = self.mpc_iter_OSAD(sim_initial_state, fut_traj_value[:, :-1], self.all_params_ellipses)
+                x_opt_OSAD = x_opt_OSAD.full().reshape((6, 11), order='F')
+                unfeasible_OSAD = 0
+            except:
+                RuntimeError("Optimization OSAD not converged")
+                unfeasible_OSAD = 1
+                
+
+            time_duration_OSAD[instance] = time.time() - time_start_OSAD
+
+            # print the solutions on the same landscape
             # x_opt = x_opt.reshape((6, 11), order='F')
+            if unfeasible_OSAD+unfeasible_simpleMass==0:
+                fig = plt.figure()
+                ax = fig.add_subplot(311)
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(x_opt_simpleMass[0,:]), c='blue', label='simpleMass')
+                ax.scatter(range(self.nlps_OSAD.N+1), np.rad2deg(x_opt_OSAD[0,:]), c='black', label='OSAD')
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(fut_traj_value[0,:]), c='red', label='free')
 
-            fig = plt.figure()
-            ax = fig.add_subplot(311)
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[0,:]), c='blue', label='optimized')
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[0,:]), c='red', label='free')
+                ax = fig.add_subplot(312)
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(x_opt_simpleMass[2,:]), c='blue')
+                ax.scatter(range(self.nlps_OSAD.N+1), np.rad2deg(x_opt_OSAD[2,:]), c='black')
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(fut_traj_value[2,:]), c='red')
 
-            ax = fig.add_subplot(312)
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[2,:]), c='blue')
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[2,:]), c='red')
+                ax = fig.add_subplot(313)
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(x_opt_simpleMass[4,:]), c='blue')
+                ax.scatter(range(self.nlps_OSAD.N+1), np.rad2deg(x_opt_OSAD[4,:]), c='black')
+                ax.scatter(range(self.nlps_simpleMass.N+1), np.rad2deg(fut_traj_value[4,:]), c='red')
 
-            ax = fig.add_subplot(313)
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(x_opt[4,:]), c='blue')
-            ax.scatter(range(self.nlps.N+1), np.rad2deg(fut_traj_value[4,:]), c='red')
+                fig.legend()
 
-            fig.legend()
+                # title
+                fig.suptitle("x0 = [" + 
+                            str(np.round(np.rad2deg(pe_init), 1)) + ", " +
+                            str(np.round(np.rad2deg(pe_dot_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(se_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(se_dot_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(ar_init), 1)) +  ", " +
+                            str(np.round(np.rad2deg(ar_dot_init), 1)) +
+                            "]")
 
-            # title
-            fig.suptitle("x0 = [" + 
-                         str(np.round(np.rad2deg(pe_init), 1)) + ", " +
-                         str(np.round(np.rad2deg(pe_dot_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(se_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(se_dot_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(ar_init), 1)) +  ", " +
-                         str(np.round(np.rad2deg(ar_dot_init), 1)) +
-                           "]")
+                fig = plt.figure()
+                ax = fig.add_subplot()
+                ax.plot(np.rad2deg(x_opt_simpleMass[0,:]), np.rad2deg(x_opt_simpleMass[2,:]), c = 'blue', label='simpleMass')
+                ax.plot(np.rad2deg(x_opt_OSAD[0,:]), np.rad2deg(x_opt_OSAD[2,:]), c = 'black', label='OSAD')
+                # ax.plot(np.rad2deg(x_opt_simpleMass[0,0]), np.rad2deg(x_opt_simpleMass[2,0]), c = 'cyan')
+                ax.scatter(np.rad2deg(fut_traj_value[0,:]), np.rad2deg(fut_traj_value[2,:]), c = 'red')
+                ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.1))
 
-            fig = plt.figure()
-            ax = fig.add_subplot()
-            ax.scatter(np.rad2deg(x_opt[0,:]), np.rad2deg(x_opt[2,:]), c = 'blue')
-            ax.scatter(np.rad2deg(x_opt[0,0]), np.rad2deg(x_opt[2,0]), c = 'cyan')
-            ax.scatter(np.rad2deg(fut_traj_value[0,:]), np.rad2deg(fut_traj_value[2,:]), c = 'red')
-            ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.1))
+                squareDiff_last_state[instance] = np.sum(np.square(np.rad2deg(x_opt_OSAD[[0,2], -1]) - np.rad2deg(x_opt_simpleMass[[0,2], -1])))
 
-            plt.show()
-            
-            time_duration[instance] = time.time() - time_start
+                plt.show()
+            else:   
+                # if one of the two optimizations did not converge, repeat one more time with new random initial condition
+                instance = instance - 1
 
-        
-        print ("avg time: ", np.round(time_duration.sum()/instances, 3))
+            print("RMSE final pos: ", np.mean(np.sqrt(squareDiff_last_state)))
 
-        aux = 0
 
 
 # ----------------------------------------------------------------------------------------------
 
 if __name__ == '__main__':
     try:
-        # check if we are running in simulation or not
+        # Set up argparse to handle command-line arguments
         parser = argparse.ArgumentParser(description="Script that runs the Bio-aware safety net")
-        parser.add_argument("--simulation", required=True, type=str)
-        args = parser.parse_args()
-        simulation = args.simulation
+        parser.add_argument("--simulation", type=str, help="Run in simulation mode")
+        args, unknown = parser.parse_known_args()
+
+        # Check if "simulation" was passed as a command-line argument
+        if args.simulation:
+            simulation = args.simulation
+            rospy.loginfo(f"BS_net: starting with command-line argument: simulation={simulation}")
+        else:
+            # Fallback to ROS parameter if not provided as an argument
+            simulation = rospy.get_param("~simulation", "false")
+            rospy.loginfo(f"BS_net: running with ROS parameter: simulation={simulation}")
 
         # define the required paths
         code_path = os.path.dirname(os.path.realpath(__file__))     # getting path to where this script resides
-        path_to_repo = os.path.join(code_path, '..', '..')          # getting path to the repository
+        path_to_repo = os.path.join(code_path, '..')          # getting path to the repository
         path_to_model = os.path.join(path_to_repo, 'Musculoskeletal Models')    # getting path to the OpenSim models
 
         ## PARAMETERS -----------------------------------------------------------------------------------------------
-        # import the parameters for the experiment as defined in experiment_parameters.py
-        from experiment_parameters import *     # this contains the experimental_params and the shared_ros_topics
-
         # are we debugging or not?
         debug_mode = True
 
         # initialize the biomechanics-safety net module
-        bsn_module = BS_net(shared_ros_topics, debug_mode, rate=200, simulation = simulation, speed_estimate=True)
-
+        bsn_module = BS_net(debug_mode, rate=200, simulation = simulation, speed_estimate=rospy.get_param('/pu/speed_estimate'))
+        
         params_strainmap_test = np.array([4, 20/160, 90/144, 35/160, 25/144, 0])
         params_ellipse_test = np.array([20, 90, 35**2, 25**2])
         
@@ -1403,29 +1418,36 @@ if __name__ == '__main__':
         opensimAD_ID = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_ID.casadi'))
         opensimAD_FD = ca.Function.load(os.path.join(path_to_model, 'right_arm_GH_full_scaled_preservingMass_FD.casadi'))
 
-        nlps_instance = nlps.nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
+        nlps_instance_simpleMass = nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
+        nlps_instance_OSAD = nlps_module(opensimAD_FD, opensimAD_ID, bsn_module.getCurrentEllipseParams()[0], bsn_module.getCurrentEllipseParams()[1])
 
-        nlps_instance.setTimeHorizonAndDiscretization(N = 10, T = 1)
+        nlps_instance_simpleMass.setTimeHorizonAndDiscretization(N = 10, T = 1)
+        nlps_instance_OSAD.setTimeHorizonAndDiscretization(N = 10, T = 1)
 
         x = ca.MX.sym('x', 6)   # state vector: [theta, theta_dot, psi, psi_dot, phi, phi_dot], in rad or rad/s
-        nlps_instance.initializeStateVariables(x)
+        nlps_instance_simpleMass.initializeStateVariables(x)
+        nlps_instance_OSAD.initializeStateVariables(x)
 
         u = ca.MX.sym('u', 3)   # control vector: [tau_theta, tau_psi], in Nm (along the DoFs of the GH joint)  
-        nlps_instance.initializeControlVariables(u)
+        nlps_instance_simpleMass.initializeControlVariables(u)
+        nlps_instance_OSAD.initializeControlVariables(u)
 
         # define the constraints
         u_max = 1e-5
         u_min = -1e-5
         constraint_list = {'u_max':u_max, 'u_min':u_min}
-        nlps_instance.setConstraints(constraint_list)
+        nlps_instance_simpleMass.setConstraints(constraint_list)
+        nlps_instance_OSAD.setConstraints(constraint_list)
 
         # define order of polynomials and collocation points for direct collocation 
         d = 3
         coll_type = 'legendre'
-        nlps_instance.populateCollocationMatrices(d, coll_type)
+        nlps_instance_simpleMass.populateCollocationMatrices(d, coll_type)
+        nlps_instance_OSAD.populateCollocationMatrices(d, coll_type)
 
         # for now, there is no cost function
-        nlps_instance.setCostFunction(0)
+        nlps_instance_simpleMass.setCostFunction(0)
+        nlps_instance_OSAD.setCostFunction(0)
 
         # choose solver and set its options
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
@@ -1440,6 +1462,7 @@ if __name__ == '__main__':
                 'expand':1,                     # to leverage analytical expression of the Hessian
                 'ipopt.linear_solver':'ma27'
                 # 'ipopt.linear_solver':'mumps'
+                # 'ipopt.hessian_approximation':'limited-memory'
                 # "jit": True, 
                 # "compiler": "shell", 
                 # "jit_options": 
@@ -1457,74 +1480,80 @@ if __name__ == '__main__':
         # opts["debug"] = True
 
         
-        nlps_instance.setSolverOptions(solver, opts)
+        nlps_instance_simpleMass.setSolverOptions(solver, opts)
+        nlps_instance_OSAD.setSolverOptions(solver, opts)
 
-        nlps_instance.setInitialState(x_0 = x_0)
+        nlps_instance_simpleMass.setInitialState(x_0 = np.array(rospy.get_param('/pu/x_0')))
+        nlps_instance_OSAD.setInitialState(x_0 = np.array(rospy.get_param('/pu/x_0')))
 
         # after the NLPS is completely built, we assign it to the Biomechanics Safety Net
-        bsn_module.assign_nlps(nlps_instance)
+        bsn_module.assign_nlps(nlps_instance_simpleMass, nlps_instance_OSAD)
 
         # debug OpenSimAD functions
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        # bsn_module.debug_NLPS_formulation()
+        bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
         # received by the RobotControlModule
-        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = x_0[0::2], 
-                                            position_gh_in_base = experimental_params['p_gh_in_base'], 
-                                            base_R_sh = experimental_params['base_R_shoulder'], 
-                                            dist_gh_elbow = experimental_params['d_gh_ee_in_shoulder'])
+        bsn_module.publishInitialPoseAsCartRef(shoulder_pose_ref = np.array(rospy.get_param('/pu/x_0'))[0::2], 
+                                            base_R_sh = R.from_matrix(np.array(rospy.get_param('/pu/base_R_shoulder'))))
 
         # Wait until the robot has reached the required position, and proceed only when the current shoulder pose is published
         bsn_module.waitForShoulderState()
 
         # wait until the robot is requesting the optimized reference
-        print("Waiting to start therapy")
-        while not bsn_module.keepRunning():
+        print("BS_net: Waiting to start therapy")
+        while not bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
             rospy.sleep(0.1)
 
-        # countdown for the user to be ready
-        print("Starting in...")
-        print("3")
-        time.sleep(1)
-        print("2")
-        time.sleep(1)
-        print("1")
-        time.sleep(1)
+        if not rospy.get_param('/pu/execute_program'):
+            bsn_module.setReferenceToCurrentRefPose()   # hold pose and stop
+            bsn_module.strain_visualizer.quit()
 
-        # start the loop processing user input
-        bsn_module.input_thread.start()
+        # countdown for the user to be ready
+        print("BS_net: Starting in...")
+        print("BS_net: 3")
+        time.sleep(1)
+        print("BS_net: 2")
+        time.sleep(1)
+        print("BS_net: 1")
+        time.sleep(1)
 
         # start to provide the safe reference as long as the robot is requesting it
         # we do so in a way that allows temporarily pausing the therapy
         while not rospy.is_shutdown():
-            if bsn_module.keepRunning():
+            if bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
 
                 if bsn_module.interaction_mode == 0:        # mode = 0: keep current pose and wait
                     bsn_module.setReferenceToCurrentPose()
 
-                elif bsn_module.interaction_mode == 1:        # mode = 1: monitor unsafe zones
+                elif bsn_module.interaction_mode == 1:      # mode = 1: monitor movement with strain maps and unsafe zones
                     bsn_module.monitor_unsafe_zones()
                     
-                elif bsn_module.interaction_mode == 2:        # mode = 2: damp velocities in unsafe areas
-                    bsn_module.damp_unsafe_velocities()
+                elif bsn_module.interaction_mode == 2:      # mode = 2: actively deflect subject based on movement prediction
+                    bsn_module.predict_future_state_simple()
 
-                elif bsn_module.interaction_mode == 3:
-                    bsn_module.predict_future_state_kinematic(N = 10, T = 1)
+                else:
+                    bsn_module.ros_rate.sleep()
 
-                elif bsn_module.interaction_mode == 4:
-                    bsn_module.predict_future_state_simple(N = 10, T = 1)
-                    
             # if the user wants to interrupt the therapy, we stop the optimization and freeze 
             # the robot to its current reference position.
-            if not bsn_module.keepRunning():
+            elif not bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
                 # overwrite the future references with the current one
-                    bsn_module.setReferenceToCurrentRefPose()   # to decrease bumps (as trajectory will be very smooth anyway)
+                bsn_module.setReferenceToCurrentRefPose()   # to decrease bumps (as trajectory will be very smooth anyway)
+                    
+                bsn_module.ros_rate.sleep()
 
-            bsn_module.ros_rate.sleep()
+            elif not rospy.get_param('/pu/execute_program') and bsn_module.strain_visualizer.is_running:
+                bsn_module.setReferenceToCurrentRefPose()   # to decrease bumps (as trajectory will be very smooth anyway)
+                bsn_module.strain_visualizer.quit()
+                bsn_module.ros_rate.sleep()
 
+            else:
+                bsn_module.ros_rate.sleep()
+            
     except rospy.ROSInterruptException:
         pass

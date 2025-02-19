@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.spatial.transform import Rotation as R
 import pygame
 
 
@@ -35,7 +33,7 @@ class RealTimeStrainMapVisualizer:
 
 
         # dimensions of the resulting windows in pixels
-        self.widow_dimensions = (800, 600)
+        self.widow_dimensions = (1000, 800)
         self.tick_length = 5                # length of axis ticks, in pixels
         self.width_lines = 3                # width of the lines, in pixels
         self.color_lines = (255, 255, 255)
@@ -67,6 +65,7 @@ class RealTimeStrainMapVisualizer:
             self.custom_palette = [tuple(color) for color in self.custom_palette.tolist()]
 
         self.is_running = False
+        self.is_initialized = False
 
 
     def map_to_color(self, values):
@@ -161,7 +160,7 @@ class RealTimeStrainMapVisualizer:
         """
         # check if this is the first time that the visualizer is used
         # if so, instantiate the window first
-        if not self.is_running:
+        if not self.is_initialized:
             pygame.init()
             self.clock = pygame.time.Clock()
             self.screen = pygame.display.set_mode(self.widow_dimensions)
@@ -173,6 +172,7 @@ class RealTimeStrainMapVisualizer:
             self.font_ticks_pygame = pygame.font.Font(None, self.font_ticks)
 
             self.is_running = True
+            self.is_initialized = True
 
         current_strainmap = np.zeros(self.X_norm.shape)
 
@@ -217,14 +217,14 @@ class RealTimeStrainMapVisualizer:
 
         # if given, display the reference trajectory scattering its points
         if reference_current is not None:
-            traj_point_radius = 3
+            traj_point_radius = 1
             
             for index in range(np.shape(reference_current)[1]):
                 pygame.draw.circle(self.screen, (0, 0, 255), self.remapPointOnScreen(np.rad2deg(reference_current[:,index])), traj_point_radius)
 
         # if given, display the future states of the human model
         if future_trajectory is not None:
-            traj_point_radius = 3
+            traj_point_radius = 1
             
             for index in range(np.shape(future_trajectory)[1]):
                 pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(future_trajectory[:,index])), traj_point_radius)
@@ -233,6 +233,7 @@ class RealTimeStrainMapVisualizer:
         if goal_current is not None:
             goal_radius = 3.5
             pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(goal_current)), goal_radius)
+            pygame.draw.circle(self.screen, (0, 255, 0), self.remapPointOnScreen(np.rad2deg(goal_current) + np.array([10, -30])), goal_radius)
 
         # visualize ellipses
         if self.ellipse_params is not None:
@@ -265,4 +266,5 @@ class RealTimeStrainMapVisualizer:
 
 
     def quit(self):
+        self.is_running = False
         pygame.quit()

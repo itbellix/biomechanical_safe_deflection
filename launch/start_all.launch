@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+
+<launch>
+
+    <!-- Define simulation argument with a default (optional) -->
+    <arg name="simulation" default="true" />
+    <arg name="record" default="false" />
+    <arg name="bag_name" default="experiment" />
+    <arg name="venv" value="/home/itbellix/Desktop/my_venvs/safe_deflection_venv/bin/python3" />
+
+    <!-- Node for param_updater.py with argument update=true -->
+    <node
+        name="pu"
+        launch-prefix = "$(arg venv)"
+        pkg="biomechanical_safe_deflection"
+        type="param_updater.py"
+        output="screen">
+        <param name="update" value="true" />
+    </node>
+
+    <!-- Node for robot_control.py with argument simulation=true -->
+    <node
+        name="robot_control"
+        launch-prefix = "$(arg venv)"
+        pkg="biomechanical_safe_deflection"
+        type="robot_control.py"
+        output="screen"
+        args="--simulation $(arg simulation)"
+    />
+
+    <!-- Node for biomech_safety_net.py with argument simulation=true -->
+    <node
+        name="biomech_safety_net"
+        launch-prefix = "$(arg venv)"
+        pkg="biomechanical_safe_deflection"
+        type="biomech_safety_net.py"
+        output="screen"
+        args="--simulation $(arg simulation)"
+    />
+
+    <!-- Node for rqt_gui with -s reconfigure -->
+    <node
+        name="rqt_gui"
+        pkg="rqt_gui"
+        type="rqt_gui"
+        args="-s reconfigure"
+        output="screen" 
+    />
+
+    <!-- Start rosbag recording -->
+    <group if="$(arg record)">
+        <node
+            name="rosbag_record"
+            pkg="rosbag"
+            type="record"
+            output="screen"
+            args="-O /home/itbellix/Desktop/GitHub/iiwa_ros/src/biomechanical_safe_deflection/bags/$(arg name_bag) /cartesian_ref_ee /clock /estimated_shoulder_pose /iiwa7/TorqueController/command /iiwa7/ee_cartesian_pose /iiwa7/ee_cartesian_pose/stop /iiwa7/joint_states /optimization_output /pu/parameter_descriptions /pu/parameter_updates /uncompensated_z_ref /request_reference"
+        />
+    </group>
+    
+</launch>
