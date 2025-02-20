@@ -91,6 +91,9 @@ class BS_net:
 
         self.future_trajectory = None               # future trajectory of the human model
 
+        # define the timestep for the integrator (in the trajectory optimization structure)
+        self.time_horizon = 1
+
         # define the references
         self.x_opt = None
         self.u_opt = None
@@ -98,9 +101,6 @@ class BS_net:
 
         self.x_opt_upsampled = None                 # upsampled version of the optimal deflection trajectory
         self.x_opt_upsampled_time = np.linspace(0, self.time_horizon, int(self.time_horizon*rate)+1)
-        
-        # define the timestep for the integrator (in the trajectory optimization structure)
-        self.time_horizon = 1
 
         # parameters regarding the muscle activation
         self.varying_activation = False             # initialize the module assuming that the activation will not change
