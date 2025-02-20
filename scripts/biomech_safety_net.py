@@ -10,6 +10,8 @@ from scipy.optimize import minimize_scalar
 from std_msgs.msg import Float64MultiArray, Bool, Float32MultiArray
 import threading
 import simpleaudio as sa
+from sensor_msgs.msg import JointState 
+from biomechanical_safe_deflection.lbr_iiwa_robot_model import LBR7_iiwa_ros_DH
 
 import dynamic_reconfigure.client
 
@@ -131,17 +133,6 @@ class BS_net:
                                                rot_stiff_xy_l, rot_stiff_xy_l, rot_stiff_z_l]).reshape((6,1))
         self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
 
-        # self.ee_cart_stiffness_low = np.array([20, 20, 20, 5, 5, 1]).reshape((6,1))
-        # self.ee_cart_damping_low = 2 * np.sqrt(self.ee_cart_stiffness_low)
-
-        # self.ee_cart_damping_dampVel_baseline = np.array([35, 35, 35, 10, 10, 1]).reshape((6,1))
-
-        # self.ee_cart_stiffness_dampVel_fixed = np.array([100, 100, 100, 5, 5, 1]).reshape((6,1))
-        # self.ee_cart_damping_dampVel_fixed = np.array([80, 80, 80, 10, 10, 1]).reshape((6,1))
-
-        # self.max_cart_damp = 70                # max value of linear damping allowed
-
-
         # filter the reference that is generated, to avoid noise injection from the human-pose estimator
         self.last_cart_ee_cmd = np.zeros(3)         # store the last command sent to the robot (position)
         self.last_rotation_ee_cmd = np.zeros(3)     # store the last command sent to the robot (rotation)
@@ -178,6 +169,20 @@ class BS_net:
         self.topic_optimization_output = rospy.get_param('/rostopic/optimization_output')
         self.pub_optimization_output = rospy.Publisher(self.topic_optimization_output, Float32MultiArray, queue_size=1)
         self.msg_opt = Float32MultiArray()
+
+        # create a subscriber for the joint states
+        self.topic_joint_state = '/iiwa7/joint_states'
+        self.sub_joint_state = rospy.Subscriber(self.topic_joint_state, JointState, self._joint_state_cb, queue_size=1)
+        self.joint_position = None
+
+        # create a subscriber for the torque command
+        self.robot = LBR7_iiwa_ros_DH()
+        self.cmd_torque_topic = '/iiwa7/TorqueController/command'
+        self.sub_cmd_torque = rospy.Subscriber(self.cmd_torque_topic, Float64MultiArray, self._cmd_torque_cb, queue_size=1)
+
+        # create a publisher for the cmd force
+        self.cmd_force_topic = 'cmd_ee_force'
+        self.pub_cmd_force = rospy.Publisher(self.cmd_force_topic, Float64MultiArray, queue_size=1)
 
         # Create a subscriber to listen to the current value of the shoulder pose
         self.topic_shoulder_pose = rospy.get_param('/rostopic/estimated_shoulder_pose')
@@ -218,6 +223,29 @@ class BS_net:
         t = np.linspace(0, self.duration_sound, int(self.sample_rate * self.duration_sound), False)
         wave = 0.5 * np.sin(2 * np.pi * self.frequency * t)
         self.audio = (wave * 32767).astype(np.int16)
+
+
+    def _joint_state_cb(self, data):
+        """
+        Callback for the joint state. It updates the current joint position.
+        """
+        self.joint_position = data.position
+
+
+    def _cmd_torque_cb(self, data):
+        """
+        Callback for the torque command. It computes the equivalent force and publishes it, 
+        based on the current joint position and robot Jacobian.
+        """
+        if self.joint_position is not None:
+            cmd_torque = data.data
+            J = self.robot.jacob0(self.joint_position)
+            J_inv = np.linalg.pinv(J)
+            cmd_force = np.matmul(J_inv.transpose(), cmd_torque)
+            force_msg = Float64MultiArray()
+            force_msg.layout.data_offset = 0
+            force_msg.data = cmd_force
+            self.pub_cmd_force.publish(force_msg)
 
 
     def _shoulder_pose_cb(self, data):
@@ -354,9 +382,6 @@ class BS_net:
         based on user input.
         The strainmap parameters are [amplitude, x0, y0, sigma_x, sigma_y, offset] for each of the 2D-Gaussian
         functions used to approximate the original discrete strainmap.
-
-        Out of these parameters, we can already obtain the analytical expression of the high-strain zones, that is
-        computed and saved below. (TODO: wrong!)
         
         It is useful for debugging, then the update of the strainmaps should be done based on the 
         state_values_current returned by sensor input (like the robotic encoder, or visual input).
@@ -570,7 +595,7 @@ class BS_net:
                         cmd_torques = None
                         # this command would allow to retrieve the necessary torques at the human joint
                         # to keep the current state without accelerating -> model-based gravity compensation
-                        # However, if we can't compute the interaction forces this makes no sense
+                        # However, if we don't compute the interaction forces this makes no sense
                         # cmd_torques = opensimAD_ID(np.concatenate((self.x_opt[:,0], np.zeros((3,))))).full().reshape((3,1))
 
                         self.publishCartRef(cmd_shoulder_pose, cmd_torques, base_R_sh)
@@ -826,8 +851,6 @@ class BS_net:
             if current_strain<=self.strain_threshold:
                 # if the strain is sufficiently low, then we are safe: we set the parameters
                 # for the cartesian impedance controller to produce minimal interaction force with the subject
-                # self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                # self.ee_cart_damping_cmd = self.ee_cart_damping_low
                 self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
                 self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
@@ -868,8 +891,6 @@ class BS_net:
 
                 # if the directional derivative is negative, then movement is safe (we set low damping)
                 if dStrain_along_direction < 0:
-                    # self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_low
-                    # self.ee_cart_damping_cmd = self.ee_cart_damping_low
                     self.ee_cart_stiffness_cmd = np.array([0, 0, 0, 0, 0, 4]).reshape((6,1))
                     self.ee_cart_damping_cmd = 2 * np.sqrt(self.ee_cart_stiffness_cmd)
 
@@ -992,16 +1013,6 @@ class BS_net:
             traj_opt = x_opt.full().reshape((6, N+1), order='F')[:, 1::]        # we discard the first state as it is the current one
             self.x_opt = traj_opt
             self.u_opt = None       # TODO: we are ignoring u_opt for now
-
-
-            # fig = plt.figure()
-            # ax = fig.add_subplot()
-            # ax.scatter(np.rad2deg(traj_opt[0,:]), np.rad2deg(traj_opt[2,:]), c = 'blue', label = 'reference traj')
-            # ax.scatter(np.rad2deg(traj_opt[0,0]), np.rad2deg(traj_opt[2,0]), c = 'cyan')
-            # ax.scatter(np.rad2deg(self.future_trajectory[0,:]), np.rad2deg(self.future_trajectory[2,:]), c = 'red', label = 'future traj')
-            # ax.add_patch(Ellipse((self.all_params_ellipses[0], self.all_params_ellipses[1]), width = 2*np.sqrt(self.all_params_ellipses[2]), height = 2*np.sqrt(self.all_params_ellipses[3]), alpha=0.2))
-            # ax.legend()
-            # plt.show()
 
             # increase stiffness to actually track the optimal deflected trajectory
             self.ee_cart_stiffness_cmd = self.ee_cart_stiffness_default
@@ -1228,50 +1239,6 @@ class BS_net:
 
         print ("execution with Opti: ", np.round(time_execution_0,3))
 
-        # time_vec_knots = self.nlps.h * np.arange(0,self.nlps.N+1)
-        # time_vec_colPoints = np.array([])
-        # for index in range(0, self.nlps.N):
-        #     time_vec_colPoints = np.concatenate((time_vec_colPoints, time_vec_knots[index] + self.nlps.h * np.asarray(ca.collocation_points(self.nlps.pol_order, 'legendre'))))
-
-        # index_pe = self.nlps.dim_x * np.arange(0,self.nlps.N+1)
-
-        # fig = plt.figure()
-        # ax = fig.add_subplot(211)
-        # ax.scatter(time_vec_knots, x_opt[index_pe])         # plot state
-        # ax.plot(time_vec_knots, x_opt[index_pe])
-        # for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
-        #     ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 0], color = 'orange')
-        #     ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 1], color = 'blue')
-        #     ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) , 2], color = 'red')
-        # ax.set_title("Plane of elevation")
-        # ax = fig.add_subplot(212)
-        # ax.scatter(time_vec_knots, x_opt[index_pe+2])
-        # ax.plot(time_vec_knots, x_opt[index_pe+2])
-        # for interval in np.arange(0, self.nlps.N):          # plot state collocation points inside each interval
-        #     ax.scatter(time_vec_colPoints[0 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 0], color = 'orange')
-        #     ax.scatter(time_vec_colPoints[1 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2, 1], color = 'blue')
-        #     ax.scatter(time_vec_colPoints[2 + self.nlps.pol_order * interval], x_opt_coll[int(interval*self.nlps.dim_x) +2,2], color = 'red')
-        # # ax.set_title("Shoulder elevation")
-
-        # fig = plt.figure()
-        # ax = fig.add_subplot(211)
-        # ax.stairs(u_opt[0::3])
-        # ax.set_title("Torque PE")
-        # ax = fig.add_subplot(212)
-        # ax.stairs(u_opt[1::3])
-        # ax.set_title("Torque SE")
-
-        # traj_opt = x_opt.reshape((6, 11), order='F')[:, 1::]
-
-        # fig = plt.figure()
-        # ax = fig.add_subplot()
-        # ax.scatter(traj_opt[0, :], traj_opt[2, :])
-
-        # plt.show()
-
-        # simulated initial state for the human model
-        # sim_initial_state =self.nlps.x_0
-
         # Create a random number generator instance
         rng = np.random.default_rng()
         instances = 100
@@ -1453,32 +1420,15 @@ if __name__ == '__main__':
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
 
         opts = {
-                # 'ipopt.print_level': 5,         # options for the solver (check CasADi/solver docs for changing these)
-                # 'print_time': 0,
-                # 'ipopt.mu_strategy': 'adaptive',
-                # 'ipopt.nlp_scaling_method': 'gradient-based',
+                # options for the solver (check CasADi/solver docs for changing these)
+                # 'ipopt.print_level': 5,
                 'ipopt.tol': 1e-3,
                 'error_on_fail':1,              # to guarantee transparency if solver fails
                 'expand':1,                     # to leverage analytical expression of the Hessian
                 'ipopt.linear_solver':'ma27'
                 # 'ipopt.linear_solver':'mumps'
                 # 'ipopt.hessian_approximation':'limited-memory'
-                # "jit": True, 
-                # "compiler": "shell", 
-                # "jit_options": 
-                #     {
-                #         "flags": ["-O3"], 
-                #         "verbose": True
-                #     } 
                 }
-
-        # solver = 'fatrop'
-        # opts = {}
-        # opts["expand"] = True
-        # opts["fatrop"] = {"mu_init": 0.1}
-        # opts["structure_detection"] = "auto"
-        # opts["debug"] = True
-
         
         nlps_instance_simpleMass.setSolverOptions(solver, opts)
         nlps_instance_OSAD.setSolverOptions(solver, opts)
@@ -1493,7 +1443,7 @@ if __name__ == '__main__':
         # bsn_module.debug_sysDynamics()
 
         # debug the NLP formulation
-        bsn_module.debug_NLPS_formulation()
+        # bsn_module.debug_NLPS_formulation()
 
         # Publish the initial position of the KUKA end-effector, according to the initial shoulder state
         # This code is blocking until an acknowledgement is received, indicating that the initial pose has been successfully
