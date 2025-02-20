@@ -116,6 +116,7 @@ if __name__=='__main__':
     sm.calcLandscape(sm.all_params_gaussians)
 
     # STEP 2: extract values from the ROS bags
+    # They can be obtained at https://doi.org/10.4121/2016260b-d4bb-4b4e-94d5-e2e177913e11
     bag_file_name = 'deflection_interpTraj.bag'
 
     # list of variables we are interested in
