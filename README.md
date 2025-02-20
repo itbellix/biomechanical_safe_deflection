@@ -10,6 +10,29 @@ For an explanation of our approach, we refer to our paper:
 
 If you find our work useful, :star: and citations are appreciated!
 
+<table align="center">
+  <tr>
+    <td colspan="2" align="center">Funding Institutions</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a>
+        <img src="https://user-images.githubusercontent.com/50029203/226883398-97b28065-e144-493b-8a6c-5cbbd9000411.png" alt="TUD logo" height="128">
+        <br />
+        <a href="https://www.tudelft.nl/3me/over/afdelingen/biomechanical-engineering">Biomechanical Engineering</a> and <br />
+        <a href="https://www.tudelft.nl/3me/over/afdelingen/cognitive-robotics-cor">Cognitive Robotics</a> at TU Delft</p>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://chanzuckerberg.com/">
+        <img src="https://user-images.githubusercontent.com/50029203/226883506-fbb59348-38a4-43f9-93c9-2c7b8ba63619.png" alt="CZI logo" width="128" height="128">
+        <br />
+        Chan Zuckerberg Initiative
+      </a>
+    </td>
+  </tr>
+</table>
+
 ### Dependencies
 Our code depends on:
 - the Robot Operating System (ROS1)
