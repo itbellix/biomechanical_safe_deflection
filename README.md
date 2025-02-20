@@ -1,4 +1,4 @@
-# Biomechanic-aware shared control for robotic assisted physiotherapy
+# Biomechanic-aware shared control for robotic-assisted physiotherapy
 
 In this repository, we collect the code associated to our publication "A Shared Control Approach to Safely Limiting Patient Motion Based on Tendon Strain During Robotic-Assisted Shoulder Rehabilitation", to appear at the IEEE International Consortium on Rehabilitation Robotics 2025 (ICORR).
 
@@ -8,7 +8,7 @@ We provide the scripts we used to control our robotic physiotherapist (KUKA iiwa
 For an explanation of our approach, we refer to our paper:
 
 
-If you find our work useful, :star: and citations appreciated!
+If you find our work useful, :star: and citations are appreciated!
 
 ### Dependencies
 Our code depends on:
@@ -30,3 +30,5 @@ The experimental data to reproduce our figures is available at the following DOI
 
 ### Contributing and trouble-shooting
 If you would like to contribute to this project or have troubles getting things to work, just reach out or open an issue!
+
+https://github.com/user-attachments/assets/fb8b568c-e494-41ca-8cb9-3e3e3a0cb629
