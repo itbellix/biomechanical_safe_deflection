@@ -373,7 +373,6 @@ class nlps_module():
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
         self.opti.set_value(estimated_human_torques, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,))))))
-        # self.opti.set_value(estimated_human_torques_Ar, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,)))))[2])
         self.opti.set_value(phi_prm, 0)
         self.opti.set_value(phi_dot_prm, 0)
 
@@ -531,7 +530,6 @@ class nlps_module():
         # set the values of the parameters (these will be changed at runtime)
         self.opti.set_value(init_state, self.x_0)
         self.opti.set_value(estimated_human_torques_0, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,))))))
-        # self.opti.set_value(estimated_human_torques_Ar, self.sys_inv_dynamics(np.concatenate((self.x_0, np.zeros((3,)))))[2])
         self.opti.set_value(phi_prm, 0)
         self.opti.set_value(phi_dot_prm, 0)
 
@@ -669,7 +667,6 @@ class nlps_module():
             Pidot = ca.mtimes(Z, self.C)
 
             # match with ODE right-hand-side (only part of the state, to plan onto 2D strain maps)
-            # self.opti.subject_to(Pidot[0:4,:]==self.h*ode[0:4, :])    # theta_dot, theta_ddot, psi_dot, psi_ddot (no constraint phi)
             self.opti.subject_to(Pidot==self.h*ode)    # theta_dot, theta_ddot, psi_dot, psi_ddot, phi_dot, phi_ddot
 
             # save coordinates' accelerations (only for the first collocation point)
@@ -698,7 +695,7 @@ class nlps_module():
             elif self.num_unsafe_zones>0:
                 self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * Ts + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * Ts + delta_e)**2 >= 1)
 
-        # bounding final velocities according to initial ones
+        # bounding final velocities
         self.opti.subject_to(Xk[1]**2 < delta_vel)
         self.opti.subject_to(Xk[3]**2 < delta_vel)
         self.opti.subject_to(Xk[5]**2 < delta_vel)
@@ -706,13 +703,9 @@ class nlps_module():
         # # bounding the final position to avoid unrealistic solutions that end up very far from initial state
         self.opti.subject_to(ca.sumsqr(Xk[0::2] - init_state[0::2])< 1.5 * ca.sqrt(ca.sumsqr(init_state[1::2])) * self.T)
 
-        # # bounding final velocities
-        # # self.opti.subject_to((Xk[1])**2 < delta_vel)
-        # # self.opti.subject_to((Xk[3])**2 < delta_vel)
-
-        # # bounding final torques 
-        # # (we need to resort to ID here, to find the torques that can stabilize the final state)
-        # # Note that the final velocity can also be non-zero (depending on the bounds imposed above)
+        # bounding final torques 
+        # (we need to resort to ID here, to find the torques that can stabilize the final state)
+        # Note that the final velocity can also be non-zero (depending on the bounds imposed above)
         torque_stabil_end = self.sys_inv_dynamics(ca.vertcat(Xk, np.zeros((3,))))
         self.opti.subject_to(self.opti.bounded(torque_stabil_end - delta_torque, Uk, torque_stabil_end + delta_torque))
 
@@ -860,9 +853,6 @@ class nlps_module():
             Xk = self.opti.variable(self.dim_x)
             Xs.append(Xk)
 
-            # add a velocity tracking term (TODO: I think we dont want it)
-            # J = J + w_vel * ca.sumsqr(Xk[1::2] - init_state[1::2])
-
             # continuity constraint
             self.opti.subject_to(Xk_end==Xk)
 
@@ -873,7 +863,7 @@ class nlps_module():
                 # here the final point is constrained to be "far enough" from the zones, so that the next horizon of the movement is safe
                 self.opti.subject_to((Xk[0]*180/ca.pi - p_uz_1[0])**2/(ca.sqrt(p_uz_1[2]) + Xk[1] * self.N*dt + delta_e)**2 + (Xk[2]*180/ca.pi - p_uz_1[1])**2/(ca.sqrt(p_uz_1[3]) + Xk[3] * self.N*dt + delta_e)**2 >= 1)
 
-        # bounding final velocities according to initial ones
+        # bounding final velocities
         self.opti.subject_to(Xk[1]**2 < delta_vel)
         self.opti.subject_to(Xk[3]**2 < delta_vel)
         self.opti.subject_to(Xk[5]**2 < delta_vel)
