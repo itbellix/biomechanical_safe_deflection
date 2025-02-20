@@ -4,124 +4,7 @@ from matplotlib.patches import Ellipse
 import numpy as np
 import os
 from spatialmath import SO3
-from roboticstoolbox.robot.ERobot import ERobot, ERobot2
-import roboticstoolbox as rtb
-from spatialmath.base import trotz, transl
-from roboticstoolbox import DHRobot, RevoluteMDH
-
-
-class LBR7_iiwa_ros_DH(DHRobot):
-    """
-    Class that imports a LBR URDF model
-    ``LBR()`` is a class which imports a Kuka LBR robot definition
-    from a URDF file.  The model describes its kinematic and graphical
-    characteristics.
-    .. runblock:: pycon
-        >>> import roboticstoolbox as rtb
-        >>> robot = rtb.models.URDF.LBR()
-        >>> print(robot)
-    Defined joint configurations are:
-    - qz, zero joint angle configuration, 'L' shaped configuration
-    - qr, vertical 'READY' configuration
-    - qs, arm is stretched out in the x-direction
-    - qn, arm is at a nominal non-singular configuration
-    .. codeauthor:: Jesse Haviland
-    .. sectionauthor:: Peter Corke
-    """
-
-    def __init__(self):
-
-        # deg = np.pi/180
-        
-        # This LBR model is defined using modified
-        # Denavit-Hartenberg parameters
-        L = [
-            RevoluteMDH(
-                a=0.,
-                d=0.340,
-                alpha=0.,
-                I=[0.02183, 0.007703, 0.02083, 0., -0.003887, 0.],
-                r=[0., -0.03, -0.07],
-                m=3.4525,
-                G=1,
-                qlim=[-2.96706, 2.96706]
-            ),
-
-            RevoluteMDH(
-                a=0.,
-                d=0.,
-                alpha=-np.pi/2.,
-                I=[0.02076, 0.02179, 0.00779, 0., 0., 0.003626],
-                r=[-0.0003, -0.059, 0.042],
-                m=3.4821,
-                G=1,
-                qlim=[-2.094395, 2.094395]
-            ),
-
-            RevoluteMDH(
-                a=0.,
-                d=0.400,
-                alpha=np.pi/2.,
-                I=[0.03204, 0.00972, 0.03042, 0., 0.006227, 0.],
-                r=[0., 0.03, -0.06],
-                m=4.05623,
-                G=1,
-                qlim=[-2.96706, 2.96706]
-            ),
-
-            RevoluteMDH(
-                a=0.,
-                d=0.,
-                alpha=np.pi/2.,
-                I=[0.02178, 0.02075, 0.007785, 0., -0.003625, 0.],
-                r=[0., 0.067, 0.034],
-                m=3.4822,
-                G=1,
-                qlim=[-2.094395, 2.094395]
-            ),
-
-            RevoluteMDH(
-                a=0.,
-                d=0.400,
-                alpha=-np.pi/2.,
-                I=[0.01287, 0.005708, 0.01112, 0., 0.003946, 0.],
-                r=[-0.0001, -0.021, -0.114],
-                m=2.1633,
-                G=1,
-                qlim=[-2.96706, 2.96706]
-            ),
-
-            RevoluteMDH(
-                a=0.,
-                d=0.,
-                alpha=-np.pi/2.,
-                I=[0.006509, 0.006259, 0.004527, 0., -0.000319, -0.],
-                r=[0., -0.0006, -0.0603],
-                m=2.3466,
-                G=1,
-                qlim=[-2.094395, 2.094395]
-            ),
-
-            RevoluteMDH(
-                a=0.,
-                d=0.126,
-                alpha=np.pi/2.,
-                I=[0.01464, 0.01465, 0.002872, 0.000591, 0., 0.],
-                r=[0., 0., -0.025],
-                m=3.129,
-                G=1,
-                qlim=[-3.054326, 3.054326]
-            )
-        ]
-
-        super().__init__(
-            L,
-            name='LBR7_iiwa_ros_DH',
-            manufacturer="Kuka")
-
-        self.addconfiguration("qz", np.array([0, 0, 0, 0, 0, 0, 0]))
-        self.addconfiguration("qr", np.array([0, -0.3, 0, -1.9, 0, 1.5, np.pi / 4]))
-
+from biomechanical_safe_deflection.lbr_iiwa_robot_model import LBR7_iiwa_ros_DH
 
 class strainMap:
 
@@ -198,7 +81,7 @@ class strainMap:
             ax = fig.add_subplot()
         else:
             x0, y0, sigma_x, sigma_y = self.all_params_ellipse
-            ellipse = Ellipse(xy=(x0, y0), width=sigma_x, height=sigma_y, edgecolor='black', fc='None', lw=2)
+            ellipse = Ellipse(xy=(x0, y0), width=sigma_x, height=sigma_y, edgecolor='black', fc='black', lw=2, alpha=0.1, fill = True)
             ax.add_patch(ellipse)
         
         return fig, ax
@@ -209,11 +92,10 @@ if __name__=='__main__':
     experiment = 1      # 1: experiment with reactive robot behaviour
                         # 2: experiment with predictive robot behaviour
 
-    time_start_perc = 0.3   # percentage of the experiment to be considered as "start"
-    time_end_perc = 0.5     # percentage of the experiment to be considered as "end"
+    time_start_perc = 0.1   # percentage of the experiment to be considered as "start"
+    time_end_perc = 0.9
 
     # instantiate robot model
-    # kuka = ERobot.URDF('/home/itbellix/Desktop//GitHub/iiwa_ros/src/iiwa_description/urdf/iiwa7.urdf.xacro')
     kuka = LBR7_iiwa_ros_DH()
 
     # STEP 1: define the strain map used in the experiments
@@ -233,12 +115,8 @@ if __name__=='__main__':
     sm.setEllipseParams(all_params_ellipse)
     sm.calcLandscape(sm.all_params_gaussians)
 
-    # fig_sm, ax_sm = sm.plotLandscape()
-    # fig_sm, ax_sm = sm.plotUnsafeZones(fig_sm, ax_sm)
-
     # STEP 2: extract values from the ROS bags
-    bag_file_name = 'reactUnsafe_0.bag'
-    # bag_file_name = 'expetiment.bag'
+    bag_file_name = 'deflection_interpTraj.bag'
 
     # list of variables we are interested in
     estimated_shoulder_state = None
@@ -250,12 +128,19 @@ if __name__=='__main__':
     angvec_ref = None
     angvec_curr = None
     optimal_trajectory = None
+    optimal_trajectory_pe = None
+    optimal_trajectory_se = None
     joint_pos = None
     joint_vol = None
     joint_eff = None
+    external_force_minGq = None
     external_force = None
+    cmd_torques = None
 
-    # Analyze what the bag containss
+    timestamps_init = 0
+    
+
+    # Analyze what the bag contains
     with rosbag.Bag(os.path.join('bags', bag_file_name), 'r') as bag:
         # Get info about topics
         topic_info = bag.get_type_and_topic_info()
@@ -270,58 +155,64 @@ if __name__=='__main__':
             else:
                 print(f"  Frequency: NaN Hz")
 
-
-        # extracting estimated shoulder poses
-        print('\n\nExtracting estimated shoulder poses')
-        for _, msg, time_msg in bag.read_messages(topics=['/estimated_shoulder_pose']):
-            timestamp_est = time_msg.to_time()
-            if estimated_shoulder_state is None:
-                estimated_shoulder_state = [msg.data + (timestamp_est,)]
-            else:
-                estimated_shoulder_state = np.vstack((estimated_shoulder_state, [msg.data + (timestamp_est,)]))
+        # extracting the reference request (only first time stamp, can be used later to disregard useless stuff)
+        for _, msg, time_msg in bag.read_messages(topics=['/request_reference']):
+            timestamps_init = time_msg.to_time()
+            break   # we need to get the first one only
 
         # extracting reference ee cartesian poses
         # Note that this message can carry also the stiffness and damping for the cartesian impedance controller
         # We need to check its dimensions to extract all the info
-        print('Extracting reference ee cartesian poses')
+        print('\n\nExtracting reference ee cartesian poses')
         for _, msg, time_msg in bag.read_messages(topics=['/cartesian_ref_ee']):
-            if xyz_ref is None:
-                timestamps_ref = time_msg.to_time()
-                data_msg = np.reshape(msg.data[0:16], (4,4))
-                xyz_ref = np.hstack((data_msg[0:3, 3], timestamps_ref))
-                angle, vector = SO3(data_msg[0:3, 0:3]).angvec(unit='deg')
-                angvec_ref = np.hstack((angle, vector, timestamps_ref))
+            timestamps_ref = time_msg.to_time()
 
-            else:
-                timestamps_ref = time_msg.to_time()
-                data_msg = np.reshape(msg.data[0:16], (4,4))
-                xyz_ref = np.vstack((xyz_ref, np.hstack((data_msg[0:3, 3], timestamps_ref))))
-                angle, vector = SO3(data_msg[0:3, 0:3]).angvec(unit='deg')
-                angvec_ref = np.vstack((angvec_ref, np.hstack((angle, vector, timestamps_ref))))
+            if timestamps_ref>=timestamps_init:
+                if xyz_ref is None:
+                    data_msg = np.reshape(msg.data[0:16], (4,4))
+                    xyz_ref = np.hstack((data_msg[0:3, 3], timestamps_ref))
+                    angle, vector = SO3(data_msg[0:3, 0:3]).angvec(unit='deg')
+                    angvec_ref = np.hstack((angle, vector, timestamps_ref))
 
-            if stiffness_ref is None:
-                if len(msg.data) == 22:     # cartesian stiffness has been specified, with critical damping
-                    stiffness_ref = np.hstack((np.reshape(msg.data[16:22], (6, 1)), timestamps_ref))
-                    damping_ref = np.hstack((2* np.sqrt(np.reshape(msg.data[16:22]), (6, 1)), timestamps_ref))
+                else:
+                    data_msg = np.reshape(msg.data[0:16], (4,4))
+                    xyz_ref = np.vstack((xyz_ref, np.hstack((data_msg[0:3, 3], timestamps_ref))))
+                    angle, vector = SO3(data_msg[0:3, 0:3]).angvec(unit='deg')
+                    angvec_ref = np.vstack((angvec_ref, np.hstack((angle, vector, timestamps_ref))))
 
-                if len(msg.data) == 28:     # cartesian stiffness and damping have been specified
-                    stiffness_ref = np.hstack((msg.data[16:22], timestamps_ref))
-                    damping_ref = np.hstack((msg.data[22:28], timestamps_ref))
-            else:
+                if stiffness_ref is None:
+                    if len(msg.data) == 22:     # cartesian stiffness has been specified, with critical damping
+                        stiffness_ref = np.hstack((np.reshape(msg.data[16:22], (6, 1)), timestamps_ref))
+                        damping_ref = np.hstack((2* np.sqrt(np.reshape(msg.data[16:22]), (6, 1)), timestamps_ref))
 
-                if len(msg.data) == 22:     # cartesian stiffness has been specified, with critical damping
-                    stiffness_ref = np.vstack((stiffness_ref, np.hstack((msg.data[16:22], timestamps_ref))))
-                    damping_ref = np.vstack((damping_ref, np.hstack((2* np.sqrt(msg.data[16:22]), timestamps_ref))))
+                    if len(msg.data) == 28:     # cartesian stiffness and damping have been specified
+                        stiffness_ref = np.hstack((msg.data[16:22], timestamps_ref))
+                        damping_ref = np.hstack((msg.data[22:28], timestamps_ref))
+                else:
 
-                if len(msg.data) == 28:     # cartesian stiffness and damping have been specified
-                    stiffness_ref = np.vstack((stiffness_ref, np.hstack((msg.data[16:22], timestamps_ref))))
-                    damping_ref = np.vstack((damping_ref, np.hstack((msg.data[22:28], timestamps_ref))))
+                    if len(msg.data) == 22:     # cartesian stiffness has been specified, with critical damping
+                        stiffness_ref = np.vstack((stiffness_ref, np.hstack((msg.data[16:22], timestamps_ref))))
+                        damping_ref = np.vstack((damping_ref, np.hstack((2* np.sqrt(msg.data[16:22]), timestamps_ref))))
+
+                    if len(msg.data) == 28:     # cartesian stiffness and damping have been specified
+                        stiffness_ref = np.vstack((stiffness_ref, np.hstack((msg.data[16:22], timestamps_ref))))
+                        damping_ref = np.vstack((damping_ref, np.hstack((msg.data[22:28], timestamps_ref))))
+
+        # extracting estimated shoulder poses
+        print('Extracting estimated shoulder poses')
+        for _, msg, time_msg in bag.read_messages(topics=['/estimated_shoulder_pose']):
+            timestamp_est = time_msg.to_time()
+            if timestamp_est >= xyz_ref[0, -1]:
+                if estimated_shoulder_state is None:
+                    estimated_shoulder_state = [msg.data + (timestamp_est,)]
+                else:
+                    estimated_shoulder_state = np.vstack((estimated_shoulder_state, [msg.data + (timestamp_est,)]))
 
         # extracting actual ee cartesian poses
         print('Extracting actual ee cartesian poses')
         for _, msg, time_msg in bag.read_messages(topics=['/iiwa7/ee_cartesian_pose']):
             time_curr = time_msg.to_time()
-            if time_curr >= xyz_ref[0, -1]:     # only interested in the poses after there is a reference to follow
+            if time_curr >= xyz_ref[0, -1] and time_curr >=timestamps_init:     # only interested in the poses after there is a reference to follow
                 if xyz_curr is None:
                     timestamps_curr = time_msg.to_time()
                     data_msg = np.reshape(msg.pose, (4,4))
@@ -340,46 +231,71 @@ if __name__=='__main__':
         for _, msg, time_msg in bag.read_messages(topics=['/optimization_output']):
             data = np.reshape(msg.data, (6, 11))
             time_opt = time_msg.to_time()
-            if optimal_trajectory is None:
-                optimal_trajectory = np.hstack((data, time_opt * np.ones((6,1))))
-            else:
-                optimal_trajectory = np.vstack((optimal_trajectory, np.hstack((data, time_opt))))
+            if time_opt>=xyz_ref[0,-1] and time_opt>=timestamps_init:
+                if optimal_trajectory is None:
+                    optimal_trajectory = np.hstack((data, time_opt * np.ones((6,1))))
+                    optimal_trajectory_pe = np.hstack((data[0, :], time_opt))
+                    optimal_trajectory_se = np.hstack((data[2, :], time_opt))
+                else:
+                    optimal_trajectory = np.vstack((optimal_trajectory, np.hstack((data, time_opt * np.ones((6,1))))))
+                    optimal_trajectory_pe = np.vstack((optimal_trajectory_pe, np.hstack((data[0,:], time_opt))))
+                    optimal_trajectory_se = np.vstack((optimal_trajectory_se, np.hstack((data[2,:], time_opt))))
 
+
+        # extracting the commanded forces to the CIC
+        print("Extracting commanded torques")
+        for _, msg, time_msg in bag.read_messages(topics=['/iiwa7/TorqueController/command']):
+            time_cf = time_msg.to_time()
+            if time_cf>=xyz_ref[0,-1] and time_cf>=timestamps_init:
+                if cmd_torques is None:
+                    cmd_torques = np.hstack((msg.data, time_cf))
+                else:
+                    cmd_torques = np.vstack((cmd_torques, np.hstack((msg.data, time_cf))))
 
         # extracting the joint state values
         print("Extracting joint values")
         for _, msg, time_msg in bag.read_messages(topics=['/iiwa7/joint_states']):
             time_joint = time_msg.to_time()
 
-            if time_joint >= xyz_ref[0, -1]:
-                # here we also EXTRACT CONTACT FORCE MAGNITUDE
-                # considering the full dynamic model of the robot:
-                # tau = M(q) * q_ddot + C(q, q_dot) * q_dot + G(q) + J^T * F_ext  -> we want the F_ext!
-                # 
-                # Since the Kuka already runs its own gravity compensation, the term G(q) is accounted for in tau.
-                # If we assume minimal acceleration, we can disregard M(q):
-                # F_ext = (J^T)^(-1) * (tau - C(q, q_dot) * q_dot - G(q))
-                # 
-                # Let's use the robotics toolbox functionalities to calculate it!
-                J = kuka.jacob0(msg.position)
-                J_inv = np.linalg.pinv(J)
-                C_qq_dot = kuka.coriolis(msg.position, msg.velocity)
-                G_q = kuka.gravload(msg.position)
-                wrench_ee = J_inv.transpose() @ (np.array(msg.effort) - C_qq_dot @ np.array(msg.velocity) + G_q)
-                # wrench_ee = J_inv.transpose() @ np.array(msg.effort)
-
+            if time_joint >= xyz_ref[0, -1] and time_joint>=timestamps_init:
+                # We extract the commanded EE force from the commanded torques.
                 if joint_pos is None:
                     joint_pos = np.hstack((msg.position, time_joint))
-                    joint_vel = np.hstack((msg.velocity, time_joint))
-                    joint_eff = np.hstack((msg.effort, time_joint))
-                    external_force = np.hstack((wrench_ee, time_joint))
                 else:
                     joint_pos = np.vstack((joint_pos, np.hstack((msg.position, time_joint))))
-                    joint_vel = np.vstack((joint_vel, np.hstack((msg.velocity, time_joint))))
-                    joint_eff = np.vstack((joint_eff, np.hstack((msg.effort, time_joint))))
-                    external_force = np.vstack((external_force, np.hstack((wrench_ee, time_joint))))
 
+    # Now let's compute the commanded interaction force
+    # Extract timestamps (last column)
+    timestamps_torques = cmd_torques[:, -1]
+    timestamps_joints = joint_pos[:, -1]
 
+    # Initialize lists for aligned rows
+    aligned_cmd_torques = []
+    aligned_joint_pos = []
+
+    # Iterate through torque timestamps to find closest joint timestamps
+    for idx_torque, time_torque in enumerate(timestamps_torques):
+        # Find the index of the closest joint timestamp
+        closest_idx_joint = np.argmin(np.abs(timestamps_joints - time_torque))
+        time_joint = timestamps_joints[closest_idx_joint]
+
+        # Add rows where the timestamp difference is minimal
+        if np.abs(time_torque - time_joint) <= 0.001:  # Optional: Add a tolerance if needed
+            aligned_cmd_torques.append(cmd_torques[idx_torque])
+            aligned_joint_pos.append(joint_pos[closest_idx_joint])
+
+    # Convert lists back to numpy arrays
+    aligned_cmd_torques = np.array(aligned_cmd_torques)[::2, :]
+    aligned_joint_pos = np.array(aligned_joint_pos)[::2, :]
+
+    external_force = np.zeros((aligned_cmd_torques.shape[0], 7))
+    # Loop through them to extract the commanded contact force
+    for instant in range(aligned_cmd_torques.shape[0]):
+        J = kuka.jacob0(aligned_joint_pos[instant, 0:-1])
+        J_inv = np.linalg.pinv(J)
+        external_force[instant,:] =np.concatenate((np.matmul(J_inv.transpose(), aligned_cmd_torques[instant, 0:-1]), np.array([aligned_cmd_torques[instant, -1]]))) 
+
+    external_force = np.array(external_force)
     # Now, let's filter the data to retain only the interesting part of the experiment
     # (i.e., when the subject is wearing the brace properly and the robot is moving)
     init_time = xyz_curr[int(xyz_curr.shape[0]*time_start_perc), -1]            # identify initial time-step
@@ -395,50 +311,70 @@ if __name__=='__main__':
     angvec_ref_plot = angvec_ref
     z_uncompensated_plot = z_uncompensated
     optimal_trajectory_plot = optimal_trajectory
+    optimal_trajectory_pe_plot = optimal_trajectory_pe
+    optimal_trajectory_se_plot = optimal_trajectory_se
     joint_pos_plot = joint_pos
-    joint_vel_plot = joint_vel
-    joint_eff_plot = joint_eff
     external_force_plot = external_force
+    external_force_minGq_plot = external_force_minGq
 
     estimated_shoulder_state_plot[:,-1] = estimated_shoulder_state_plot[:,-1] - init_time   # center time values starting at initial time
     xyz_curr_plot[:,-1] = xyz_curr_plot[:,-1] - init_time
     xyz_ref_plot[:,-1] = xyz_ref_plot[:,-1] - init_time
-    stiffness_ref_plot[:,-1] = stiffness_ref_plot[:,-1] - init_time
-    damping_ref_plot[:,-1] = damping_ref_plot[:,-1] - init_time
     angvec_curr_plot[:,-1] = angvec_curr_plot[:,-1] - init_time
     angvec_ref_plot[:,-1] = angvec_ref_plot[:,-1] - init_time
     joint_pos_plot[:,-1] = joint_pos_plot[:,-1] - init_time
-    joint_vel_plot[:,-1] = joint_vel_plot[:,-1] - init_time
-    joint_eff_plot[:,-1] = joint_eff_plot[:,-1] - init_time
     external_force_plot[:,-1] = external_force_plot[:,-1] - init_time
 
+    if stiffness_ref_plot is not None:
+        stiffness_ref_plot[:,-1] = stiffness_ref_plot[:,-1] - init_time
+        damping_ref_plot[:,-1] = damping_ref_plot[:,-1] - init_time
 
     if z_uncompensated_plot is not None:
         z_uncompensated_plot[:,-1] = z_uncompensated_plot[:,-1] - init_time
 
     if optimal_trajectory_plot is not None:
-        optimal_trajectory_plot[:,:,-1] = optimal_trajectory_plot[:,:,-1] - init_time
+        optimal_trajectory_plot[:,-1] = optimal_trajectory_plot[:,-1] - init_time
+        optimal_trajectory_pe_plot[:,-1] = optimal_trajectory_pe_plot[:,-1] - init_time
+        optimal_trajectory_se_plot[:,-1] = optimal_trajectory_se_plot[:,-1] - init_time
 
     estimated_shoulder_state_plot = estimated_shoulder_state_plot[(estimated_shoulder_state_plot[:,-1]>0) & (estimated_shoulder_state_plot[:,-1]<end_time)]
     xyz_curr_plot = xyz_curr_plot[(xyz_curr_plot[:,-1]>0) & (xyz_curr_plot[:,-1]<end_time)]    # retain data after initial time
     xyz_ref_plot = xyz_ref_plot[(xyz_ref_plot[:,-1]>0) & (xyz_ref_plot[:,-1]<end_time)]
-    stiffness_ref_plot = stiffness_ref_plot[(stiffness_ref_plot[:,-1]>0) & (stiffness_ref_plot[:,-1]<end_time)]
-    damping_ref_plot = damping_ref_plot[(damping_ref_plot[:,-1]>0) & (damping_ref_plot[:,-1]<end_time)]
     angvec_curr_plot = angvec_curr_plot[(angvec_curr_plot[:,-1]>0) & (angvec_curr_plot[:,-1]<end_time)]
     angvec_ref_plot = angvec_ref_plot[(angvec_ref_plot[:,-1]>0) & (angvec_ref_plot[:,-1]<end_time)]
     joint_pos_plot = joint_pos_plot[(joint_pos_plot[:,-1]>0) & (joint_pos_plot[:,-1]<end_time)]
-    joint_vel_plot = joint_vel_plot[(joint_vel_plot[:,-1]>0) & (joint_vel_plot[:,-1]<end_time)]
-    joint_eff_plot = joint_eff_plot[(joint_eff_plot[:,-1]>0) & (joint_eff_plot[:,-1]<end_time)]
     external_force_plot = external_force_plot[(external_force_plot[:,-1]>0) & (external_force_plot[:,-1]<end_time)]
     
+    if optimal_trajectory_pe_plot is not None:
+        optimal_trajectory_pe_plot = optimal_trajectory_pe_plot[(optimal_trajectory_pe_plot[:,-1]>0) & (optimal_trajectory_pe_plot[:,-1]<end_time)]
+        optimal_trajectory_se_plot = optimal_trajectory_se_plot[(optimal_trajectory_se_plot[:,-1]>0) & (optimal_trajectory_se_plot[:,-1]<end_time)]
+
     if z_uncompensated_plot is not None:
         z_uncompensated_plot = z_uncompensated_plot[(z_uncompensated_plot[:,-1]>0) & (z_uncompensated_plot[:,-1]<end_time)]
 
+    if stiffness_ref_plot is not None:
+        stiffness_ref_plot = stiffness_ref_plot[(stiffness_ref_plot[:,-1]>0) & (stiffness_ref_plot[:,-1]<end_time)]
+        damping_ref_plot = damping_ref_plot[(damping_ref_plot[:,-1]>0) & (damping_ref_plot[:,-1]<end_time)]
+
     # now let's plot the figures
     # TRAJECTORY ON THE STRAIN MAP
+    init_state = estimated_shoulder_state_plot[np.abs(estimated_shoulder_state_plot[:,-1] - optimal_trajectory_pe_plot[0, -1]) < 0.0025]
+    initial_state = init_state[:,0:4]
+    initial_state = initial_state.transpose()
+    future_states = np.zeros((4, 10+1))
+    future_states[0, 0] = initial_state[0]
+    future_states[2, 0] = initial_state[2]
+    future_states[1::2, :] = initial_state[1::2]
+    for timestep in range(1, 11):
+            # retrieve estimation for future human state at current time step (assuming constant velocity)
+            future_states[::2, timestep] = future_states[::2, timestep-1] + 1/10 * future_states[1::2, timestep-1]
+
+
     fig_sm, ax_sm = sm.plotLandscape()
     fig_sm, ax_sm = sm.plotUnsafeZones(fig_sm, ax_sm)
-    ax_sm.plot(np.rad2deg(estimated_shoulder_state_plot[:, 0]), np.rad2deg(estimated_shoulder_state_plot[:, 2]), c='blue')
+    ax_sm.plot(np.rad2deg(estimated_shoulder_state_plot[:, 0]), np.rad2deg(estimated_shoulder_state_plot[:, 2]), c='blue', linewidth=2)
+    ax_sm.plot(np.rad2deg(optimal_trajectory_pe_plot[0, 0:-1]), np.rad2deg(optimal_trajectory_se_plot[0, 0:-1]), c='green', linewidth=2)
+    ax_sm.scatter(np.rad2deg(future_states[0,:]), np.rad2deg(future_states[2,:]), c='blue')
 
     # EVOLUTION OF STIFFNESS AND DAMPING
     fig_sd = plt.figure()
@@ -457,5 +393,65 @@ if __name__=='__main__':
     force_magnitude = np.sqrt(np.sum(external_force_plot[:, :3]**2, axis=1))
     fig_f = plt.figure()
     ax_f = fig_f.add_subplot()
-    ax_f.plot(external_force_plot[:,-1], force_magnitude)
+    ax_f.plot(external_force_plot[:,-1], force_magnitude, c = "red", label="Commanded")
+    ax_f.set_ylabel('Force [N]')
+    ax_f.set_xlabel('time [s]')
+    ax_f.legend()
+    fig_f.suptitle('Commanded EE force')
 
+    # EVOLUTION OF THE ERRORS
+    # POSITION ERROR
+    min_length = np.min((xyz_ref_plot.shape[0], xyz_curr_plot.shape[0]))
+
+    fig_err_pos = plt.figure()
+    ax = fig_err_pos.add_subplot(321)
+    ax.plot(xyz_curr_plot[:,-1], xyz_curr_plot[:,0], label = 'x_curr', color='black')
+    ax.plot(xyz_ref_plot[:,-1], xyz_ref_plot[:,0], label = 'x_ref', color='black', linestyle='dashed')
+    ax.set_ylabel('[m]')
+    ax.legend()
+    ax = fig_err_pos.add_subplot(322)
+    ax.plot(xyz_curr_plot[0:min_length,-1], xyz_ref_plot[0:min_length,0] - xyz_curr_plot[0:min_length,0], label = 'x_err')
+    ax.set_ylabel('[m]')
+    ax.legend()
+    ax = fig_err_pos.add_subplot(323)
+    ax.plot(xyz_curr_plot[:,-1], xyz_curr_plot[:,1], label = 'y_curr', color='black')
+    ax.plot(xyz_ref_plot[:,-1], xyz_ref_plot[:,1], label = 'y_ref', color='black', linestyle='dashed')
+    ax.set_ylabel('[m]')
+    ax.legend()
+    ax = fig_err_pos.add_subplot(324)
+    ax.plot(xyz_curr_plot[0:min_length,-1], xyz_ref_plot[0:min_length,1] - xyz_curr_plot[0:min_length,1], label = 'y_err')
+    ax.set_ylabel('[m]')
+    ax.legend()
+    ax = fig_err_pos.add_subplot(325)
+    ax.plot(xyz_curr_plot[:,-1], xyz_curr_plot[:,2], label = 'z_curr', color='black')
+    ax.plot(xyz_ref_plot[:,-1], xyz_ref_plot[:,2], label = 'z_ref', color='black', linestyle='dashed')
+    ax.set_ylabel('[m]')
+    ax.legend()
+    ax = fig_err_pos.add_subplot(326)
+    ax.plot(xyz_curr_plot[0:min_length,-1], xyz_ref_plot[0:min_length,2] - xyz_curr_plot[0:min_length,2], label = 'z_err')
+    ax.set_ylabel('[m]')
+    ax.legend()
+
+    fig_err_pos.suptitle("EE cartesian position")
+
+    # ORIENTATION ERROR (AS AXIS-ANGLE)
+    abs_time_diff = np.abs(angvec_ref_plot[0:min_length,-1] - angvec_curr_plot[0:min_length,-1])
+
+    orientation_mismatch = np.rad2deg(np.arccos(np.sum(angvec_ref_plot[0:min_length, 1:4] * angvec_curr_plot[0:min_length, 1:4], axis=1) /
+                            (np.linalg.norm(angvec_ref_plot[0:min_length, 1:4], axis=1) * np.linalg.norm(angvec_curr_plot[0:min_length, 1:4], axis=1))))
+
+    angle_mismatch = angvec_ref_plot[0:min_length, 0] - angvec_curr_plot[0:min_length, 0]
+
+    fig_err_ori = plt.figure()
+    ax = fig_err_ori.add_subplot(211)
+    ax.plot(angvec_ref_plot[0:min_length, -1], orientation_mismatch, label='axis mismatch')
+    ax.set_ylabel('[deg]')
+    ax.legend()
+    ax = fig_err_ori.add_subplot(212)
+    ax.plot(angvec_ref_plot[0:min_length, -1], angle_mismatch, label='angle mismatch')
+    ax.set_ylabel('[deg]')
+    ax.set_xlabel('time [s]')
+    ax.legend()
+    fig_err_ori.suptitle("EE orientation error")
+
+    plt.show(block=True)
