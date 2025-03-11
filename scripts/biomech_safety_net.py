@@ -1429,8 +1429,9 @@ if __name__ == '__main__':
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
 
         # quick check to determine if linear solver ma27 from HSL is available. Otherwise, we use MUMPS
-        # Define a simple NLP problem
-        nlp = {'x': ca.MX.sym('x'), 'f': ca.MX.sym('x')**2}
+        # Define a simple NLP problem for this use
+        x = ca.MX.sym("x")
+        nlp = {"x": x, "f": x**2}
 
         solver_opts = {
             "ipopt.print_level": 0,
@@ -1446,6 +1447,7 @@ if __name__ == '__main__':
         except RuntimeError as e:
             ma27_available = 0
 
+        # now that we know which solver to use, we set the options
         if ma27_available:
             opts = {
                     # options for the solver (check CasADi/solver docs for changing these)
