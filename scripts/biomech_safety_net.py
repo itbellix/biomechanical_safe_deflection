@@ -1430,19 +1430,20 @@ if __name__ == '__main__':
 
         # quick check to determine if linear solver ma27 from HSL is available. Otherwise, we use MUMPS
         # Define a simple NLP problem for this use
+        rospy.loginfo("checking which linear solver is available")
         x = ca.MX.sym("x")
-        nlp = {"x": x, "f": x**2}
+        dummy_nlp = {"x": x, "f": x**2}
 
-        solver_opts = {
+        dummy_solver_opts = {
             "ipopt.print_level": 0,
             "ipopt.linear_solver": "ma27"
         }
 
         # Run solver and check logs
-        solver = ca.nlpsol("solver", "ipopt", nlp, solver_opts)
+        dummy_solver = ca.nlpsol("solver", "ipopt", dummy_nlp, dummy_solver_opts)
 
         try:
-            sol = solver(x0=0.5)  # Dummy solve to test which solver is available
+            sol = dummy_solver(x0=0.5)  # Dummy solve to test which solver is available
             ma27_available = 1
         except RuntimeError as e:
             ma27_available = 0
