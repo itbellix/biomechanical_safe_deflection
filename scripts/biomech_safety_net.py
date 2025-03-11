@@ -9,7 +9,6 @@ from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize_scalar
 from std_msgs.msg import Float64MultiArray, Bool, Float32MultiArray
 import threading
-import simpleaudio as sa
 from sensor_msgs.msg import JointState 
 from biomechanical_safe_deflection.lbr_iiwa_robot_model import LBR7_iiwa_ros_DH
 
@@ -23,6 +22,12 @@ from biomechanical_safe_deflection.realTime_strainMap_visualizer import RealTime
 
 # import the nlps_module
 from biomechanical_safe_deflection.nlps_module import nlps_module
+
+# import simple audio
+try:
+    import simpleaudio as sa
+except:
+    rospy.loginfo("Simpleaudio not found. Sound will not be played.")
 
 class BS_net:
     """
@@ -1123,7 +1128,11 @@ class BS_net:
             self.ee_cart_damping_cmd = self.ee_cart_damping_default
 
             # produce a sound for the duration of the trajectory
-            sa.play_buffer(self.audio, 1, 2, self.sample_rate)
+            try:
+                sa.play_buffer(self.audio, 1, 2, self.sample_rate)
+            except:
+                rospy.loginfo("Sound could not be played")
+                
             rospy.sleep(self.time_horizon)      # send rospy to sleep for the duration of the time horizon
 
             # decrease stiffness again so that subject can continue their movement
