@@ -10,6 +10,7 @@ from scipy.optimize import minimize_scalar
 from std_msgs.msg import Float64MultiArray, Bool, Float32MultiArray
 import threading
 from sensor_msgs.msg import JointState 
+import ctypes
 from biomechanical_safe_deflection.lbr_iiwa_robot_model import LBR7_iiwa_ros_DH
 
 import dynamic_reconfigure.client
@@ -1354,6 +1355,19 @@ class BS_net:
 
 
 
+def is_hsl_present():
+    lib_paths = os.environ.get("LD_LIBRARY_PATH", "").split(":")
+    for path in lib_paths:
+        if os.path.exists(os.path.join(path, "libhsl.so")):
+            return True
+    try:
+        ctypes.CDLL("libhsl.so")  # Try loading the shared library
+        return True
+    except OSError:
+        return False
+
+
+
 # ----------------------------------------------------------------------------------------------
 
 if __name__ == '__main__':
@@ -1431,25 +1445,10 @@ if __name__ == '__main__':
         # quick check to determine if linear solver ma27 from HSL is available. Otherwise, we use MUMPS
         # Define a simple NLP problem for this use
         rospy.loginfo("checking which linear solver is available")
-        x = ca.MX.sym("x")
-        dummy_nlp = {"x": x, "f": x**2}
-
-        dummy_solver_opts = {
-            "ipopt.print_level": 0,
-            "ipopt.linear_solver": "ma27"
-        }
-
-        # Run solver and check logs
-        dummy_solver = ca.nlpsol("solver", "ipopt", dummy_nlp, dummy_solver_opts)
-
-        try:
-            sol = dummy_solver(x0=0.5)  # Dummy solve to test which solver is available
-            ma27_available = 1
-        except RuntimeError as e:
-            ma27_available = 0
+        chosen_solver = "ma27" if is_hsl_present() else "mumps"
 
         # now that we know which solver to use, we set the options
-        if ma27_available:
+        if chosen_solver == "ma27":
             opts = {
                     # options for the solver (check CasADi/solver docs for changing these)
                     # 'ipopt.print_level': 5,
@@ -1459,7 +1458,7 @@ if __name__ == '__main__':
                     'ipopt.linear_solver':'ma27'
                     # 'ipopt.hessian_approximation':'limited-memory'
                     }
-        else:
+        elif chosen_solver == "mumps":
             opts = {
                     # options for the solver (check CasADi/solver docs for changing these)
                     # 'ipopt.print_level': 5,
@@ -1469,6 +1468,9 @@ if __name__ == '__main__':
                     'ipopt.linear_solver':'mumps'
                     # 'ipopt.hessian_approximation':'limited-memory'
                     }
+        else:
+            rospy.ERROR("No linear solver available. Terminating.")
+
         nlps_instance_simpleMass.setSolverOptions(solver, opts)
         nlps_instance_OSAD.setSolverOptions(solver, opts)
 
