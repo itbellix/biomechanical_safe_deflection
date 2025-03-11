@@ -7,6 +7,14 @@ We provide the scripts we used to control our robotic physiotherapist (KUKA iiwa
 ### Paper
 For an explanation of our approach, we refer to our paper:
 
+```bib
+@article{belli2025,
+  title={A Shared Control Approach to Safely Limiting Patient Motion Based on Tendon Strain During Robotic-Assisted Shoulder Rehabilitation},
+  author={Belli, Italo and Hu Yuxuan, and Prendergast, J Micah and Abbink David and Seth, Ajay and Peternel, Luka},
+  journal=ICORR,
+  year={2025}
+}
+```
 
 If you find our work useful, :star: and citations are appreciated!
 
@@ -48,10 +56,14 @@ The code is structured as a ROS package to simplify its execution. The most impo
 
 The `launch` folder contains the launch files and a readme on how to use them.
 
+### <img src='https://github.com/user-attachments/assets/de257e93-fce4-453a-b53c-c32ab9165769' width=30> Dockerized version
+To enable others to run our code more easily, we provide also a dockerized version of it at [biomechanical_safe_deflection_docker](https://github.com/itbellix/biomechanical_safe_deflection_docker). Check it out!
+
 ### Experimental data
 The experimental data to reproduce our figures is available at the following DOI: 10.4121/2016260b-d4bb-4b4e-94d5-e2e177913e11
 
 ### Contributing and trouble-shooting
 If you would like to contribute to this project or have troubles getting things to work, just reach out or open an issue!
 
+### Video of our experiments
 https://github.com/user-attachments/assets/fb8b568c-e494-41ca-8cb9-3e3e3a0cb629
