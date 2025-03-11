@@ -568,7 +568,7 @@ class BS_net:
         while not rospy.is_shutdown() and not self.flag_receiving_shoulder_pose:
             self.ros_rate.sleep()
 
-        print("Receiving current shoulder pose.")
+        rospy.loginfo("Receiving current shoulder pose.")
 
 
     def publish_continuous_trajectory(self, base_R_sh):
@@ -1246,7 +1246,7 @@ class BS_net:
         self.nlps_OSAD.solveNLPOnce()
         time_execution_0 = time.time() - time_start
 
-        print ("execution with Opti: ", np.round(time_execution_0,3))
+        rospy.loginfo("execution with Opti: ", np.round(time_execution_0,3))
 
         # Create a random number generator instance
         rng = np.random.default_rng()
@@ -1350,7 +1350,7 @@ class BS_net:
                 # if one of the two optimizations did not converge, repeat one more time with new random initial condition
                 instance = instance - 1
 
-            print("RMSE final pos: ", np.mean(np.sqrt(squareDiff_last_state)))
+            rospy.loginfo("RMSE final pos: ", np.mean(np.sqrt(squareDiff_last_state)))
 
 
 
@@ -1428,17 +1428,44 @@ if __name__ == '__main__':
         # choose solver and set its options
         solver = 'ipopt'        # available solvers depend on CasADi interfaces
 
-        opts = {
-                # options for the solver (check CasADi/solver docs for changing these)
-                # 'ipopt.print_level': 5,
-                'ipopt.tol': 1e-3,
-                'error_on_fail':1,              # to guarantee transparency if solver fails
-                'expand':1,                     # to leverage analytical expression of the Hessian
-                'ipopt.linear_solver':'ma27'
-                # 'ipopt.linear_solver':'mumps'
-                # 'ipopt.hessian_approximation':'limited-memory'
-                }
-        
+        # quick check to determine if linear solver ma27 from HSL is available. Otherwise, we use MUMPS
+        # Define a simple NLP problem
+        nlp = {'x': ca.MX.sym('x'), 'f': ca.MX.sym('x')**2}
+
+        solver_opts = {
+            "ipopt.print_level": 0,
+            "ipopt.linear_solver": "ma27"
+        }
+
+        # Run solver and check logs
+        solver = ca.nlpsol("solver", "ipopt", nlp, solver_opts)
+
+        try:
+            sol = solver(x0=0.5)  # Dummy solve to test which solver is available
+            ma27_available = 1
+        except RuntimeError as e:
+            ma27_available = 0
+
+        if ma27_available:
+            opts = {
+                    # options for the solver (check CasADi/solver docs for changing these)
+                    # 'ipopt.print_level': 5,
+                    'ipopt.tol': 1e-3,
+                    'error_on_fail':1,              # to guarantee transparency if solver fails
+                    'expand':1,                     # to leverage analytical expression of the Hessian
+                    'ipopt.linear_solver':'ma27'
+                    # 'ipopt.hessian_approximation':'limited-memory'
+                    }
+        else:
+            opts = {
+                    # options for the solver (check CasADi/solver docs for changing these)
+                    # 'ipopt.print_level': 5,
+                    'ipopt.tol': 1e-3,
+                    'error_on_fail':1,              # to guarantee transparency if solver fails
+                    'expand':1,                     # to leverage analytical expression of the Hessian
+                    'ipopt.linear_solver':'mumps'
+                    # 'ipopt.hessian_approximation':'limited-memory'
+                    }
         nlps_instance_simpleMass.setSolverOptions(solver, opts)
         nlps_instance_OSAD.setSolverOptions(solver, opts)
 
@@ -1464,7 +1491,7 @@ if __name__ == '__main__':
         bsn_module.waitForShoulderState()
 
         # wait until the robot is requesting the optimized reference
-        print("BS_net: Waiting to start therapy")
+        rospy.loginfo("BS_net: Waiting to start therapy")
         while not bsn_module.keepRunning() and rospy.get_param('/pu/execute_program'):
             rospy.sleep(0.1)
 
@@ -1473,12 +1500,12 @@ if __name__ == '__main__':
             bsn_module.strain_visualizer.quit()
 
         # countdown for the user to be ready
-        print("BS_net: Starting in...")
-        print("BS_net: 3")
+        rospy.loginfo("BS_net: Starting in...")
+        rospy.loginfo("BS_net: 3")
         time.sleep(1)
-        print("BS_net: 2")
+        rospy.loginfo("BS_net: 2")
         time.sleep(1)
-        print("BS_net: 1")
+        rospy.loginfo("BS_net: 1")
         time.sleep(1)
 
         # start to provide the safe reference as long as the robot is requesting it
